@@ -11,9 +11,12 @@
 ## Global Constraints
 
 - External SIP trunk stays IPv4-only; reached via Mikrotik IPv4 port-forward. Do NOT add IPv6 trunk config.
+- SIP trunk source IP is **`103.51.112.38`**; router forwards `5060/udp` ONLY from that source.
 - `db` MUST publish only to `127.0.0.1` — never `0.0.0.0`. The `127.0.0.1:` prefix is load-bearing.
 - 80/tcp, 443/tcp, 5060/udp MUST bind dual-stack (both IPv4 and IPv6).
-- RTP media port range default: `16384-32767/udp`.
+- RTP media port range: **`56600-56800/udp`**, forwarded **open** (no source restriction). Asterisk's RTP range must be set to match.
+- Internal phones use IPv6 ULA **`fcd1::/64`**; FreePBX provisioning address is **`fcd1::beef`** (the host LAN interface must carry it).
+- Yealink phones; DHCP advertises **both** option 66 (IPv4) and option 59 (DHCPv6), each pointing to `http://[fcd1::beef]/`.
 - `init.sql` and `my.cnf` MUST NOT change — the existing `freepbxuser'@'%'` grant already covers TCP from `127.0.0.1`.
 - No code is executed against the live router by this repo; RouterOS fragments are documentation only.
 - Conventional Commits; one commit per task.
@@ -23,7 +26,7 @@
 - `docker-compose.yaml` — modify: `freepbx` → host net, `db` → bridge + localhost-published port.
 - `run.sh` — rewrite: thin wrapper (install / clean / up), drop iptables.
 - `README.md` — modify: replace ports/iptables narrative, update usage, add Asterisk dual-stack + trunk-NAT section, link router doc.
-- `docs/mikrotik-rb5009-firewall.md` — create: RouterOS v7 firewall fragments.
+- `docs/mikrotik-rb5009-firewall.md` — create: RouterOS v7 firewall + DHCP-provisioning fragments.
 
 ---
 
@@ -171,55 +174,60 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-### Task 3: Add the Mikrotik RB5009 firewall fragments doc
+### Task 3: Add the Mikrotik RB5009 firewall + DHCP doc
 
 **Files:**
 - Create: `docs/mikrotik-rb5009-firewall.md`
 
 **Interfaces:**
-- Produces: a doc path linked from README in Task 4.
+- Produces: a doc path linked from README in Task 4 and Task 5. Uses the
+  deployment's concrete values (trunk `103.51.112.38`, RTP `56600-56800`,
+  ULA `fcd1::/64`, PBX `fcd1::beef`).
 
 - [ ] **Step 1: Create `docs/mikrotik-rb5009-firewall.md`**
 
 Write the file with this content:
 
 ````markdown
-# Mikrotik RB5009 (RouterOS v7) firewall fragments
+# Mikrotik RB5009 (RouterOS v7) firewall + DHCP fragments
 
 Copy-paste fragments for exposing the host-networked FreePBX. The IPv4 SIP trunk
 is port-forwarded (DNAT) from the WAN; internal phones reach the PBX over IPv6
-directly through the `forward` chain. Substitute every `<PLACEHOLDER>` and verify
-rule ordering (RouterOS evaluates top-down; these must sit **above** your default
-`drop` rules).
+(ULA) through the `forward` chain; DHCP hands phones the provisioning URL.
+Verify rule ordering (RouterOS evaluates top-down; firewall rules must sit
+**above** your default `drop` rules).
 
-## Placeholders
+## Values used here
 
-| Placeholder | Meaning | Example |
-| --- | --- | --- |
-| `<PBX_LAN_IPV4>` | PBX host LAN IPv4 | `192.168.88.10` |
-| `<PBX_LAN_IPV6>` | PBX host LAN IPv6 (GUA or ULA) | `2001:db8:abcd:88::10` |
-| `<LAN_IPV6_PREFIX>` | Internal phone IPv6 subnet | `2001:db8:abcd:88::/64` |
-| `<TRUNK_SRC_IPV4>` | SIP trunk provider source IPv4 (optional restriction) | `203.0.113.5` |
-| WAN / LAN | Your interface-list names | `WAN` / `LAN` |
+| Item | Value |
+| --- | --- |
+| SIP trunk source IPv4 | `103.51.112.38` |
+| RTP media range (open) | `56600-56800/udp` |
+| Internal phone ULA prefix | `fcd1::/64` |
+| FreePBX provisioning ULA | `fcd1::beef` |
+| Provisioning URL | `http://[fcd1::beef]/` |
+| `<PBX_LAN_IPV4>` (substitute) | PBX host LAN IPv4, e.g. `192.168.88.10` |
+| WAN / LAN | your interface-list names |
 
-RTP media range matches the FreePBX default `16384-32767/udp`.
+> Note: `fcd1::/64` is in the `fc00::/8` half of ULA space (the strictly
+> "correct" locally-assigned half is `fd00::/8`). It routes fine on a private
+> LAN; this is intentional for this deployment.
 
 ## 1. IPv4 — DNAT the trunk to the PBX
+
+The trunk signalling is locked to the provider source; the RTP range is left
+open for unknown media gateways.
 
 ```routeros
 /ip firewall nat
 add chain=dstnat in-interface-list=WAN protocol=udp dst-port=5060 \
-    src-address=<TRUNK_SRC_IPV4> action=dst-nat \
+    src-address=103.51.112.38 action=dst-nat \
     to-addresses=<PBX_LAN_IPV4> to-ports=5060 \
-    comment="FreePBX: SIP trunk signalling"
-add chain=dstnat in-interface-list=WAN protocol=udp dst-port=16384-32767 \
-    src-address=<TRUNK_SRC_IPV4> action=dst-nat \
-    to-addresses=<PBX_LAN_IPV4> \
-    comment="FreePBX: RTP media"
+    comment="FreePBX: SIP trunk signalling (provider only)"
+add chain=dstnat in-interface-list=WAN protocol=udp dst-port=56600-56800 \
+    action=dst-nat to-addresses=<PBX_LAN_IPV4> \
+    comment="FreePBX: RTP media (open, unknown media gateways)"
 ```
-
-> Drop the `src-address=<TRUNK_SRC_IPV4>` clause only if your provider uses
-> multiple/unknown media source IPs; restricting it is safer.
 
 ## 2. IPv4 — allow the forwarded traffic
 
@@ -228,17 +236,18 @@ add chain=dstnat in-interface-list=WAN protocol=udp dst-port=16384-32767 \
 add chain=forward connection-state=established,related action=accept \
     comment="FreePBX: established/related"
 add chain=forward connection-nat-state=dstnat protocol=udp dst-port=5060 \
-    dst-address=<PBX_LAN_IPV4> action=accept comment="FreePBX: SIP trunk in"
-add chain=forward connection-nat-state=dstnat protocol=udp dst-port=16384-32767 \
-    dst-address=<PBX_LAN_IPV4> action=accept comment="FreePBX: RTP in"
+    src-address=103.51.112.38 dst-address=<PBX_LAN_IPV4> action=accept \
+    comment="FreePBX: SIP trunk in (provider only)"
+add chain=forward connection-nat-state=dstnat protocol=udp dst-port=56600-56800 \
+    dst-address=<PBX_LAN_IPV4> action=accept comment="FreePBX: RTP in (open)"
 ```
 
 ## 3. IPv6 — internal phones to the PBX, block WAN inbound
 
 ```routeros
 /ipv6 firewall address-list
-add list=pbx-host address=<PBX_LAN_IPV6> comment="FreePBX host"
-add list=lan-phones address=<LAN_IPV6_PREFIX> comment="Internal phones"
+add list=pbx-host address=fcd1::beef comment="FreePBX host (ULA)"
+add list=lan-phones address=fcd1::/64 comment="Internal phones (ULA)"
 
 /ipv6 firewall filter
 add chain=forward connection-state=established,related action=accept \
@@ -246,26 +255,53 @@ add chain=forward connection-state=established,related action=accept \
 add chain=forward src-address-list=lan-phones dst-address-list=pbx-host \
     protocol=udp dst-port=5060 action=accept comment="FreePBX v6: SIP from phones"
 add chain=forward src-address-list=lan-phones dst-address-list=pbx-host \
-    protocol=udp dst-port=16384-32767 action=accept comment="FreePBX v6: RTP from phones"
+    protocol=udp dst-port=56600-56800 action=accept comment="FreePBX v6: RTP from phones"
 add chain=forward src-address-list=lan-phones dst-address-list=pbx-host \
-    protocol=tcp dst-port=80,443 action=accept comment="FreePBX v6: web UI from phones"
+    protocol=tcp dst-port=80,443 action=accept comment="FreePBX v6: web/prov from phones"
 add chain=forward in-interface-list=WAN dst-address-list=pbx-host action=drop \
     comment="FreePBX v6: drop unsolicited WAN inbound"
 ```
 
+## 4. DHCP — advertise the provisioning URL (Yealink)
+
+Hand the provisioning URL to phones over **both** families so a Yealink phone
+provisions regardless of which it uses. Option 66 (IPv4) and option 59 (DHCPv6)
+both point at the FreePBX ULA HTTP server.
+
+```routeros
+# IPv4 DHCP option 66 (TFTP/provisioning server) carrying the IPv6 URL literal.
+/ip dhcp-server option
+add code=66 name=prov-url-v4 value="'http://[fcd1::beef]/'"
+/ip dhcp-server network
+# attach the option to your phone LAN network entry, e.g.:
+# set [find address=192.168.88.0/24] dhcp-option=prov-url-v4
+
+# DHCPv6 option 59 (OPT_BOOTFILE_URL) with the same URL.
+/ipv6 dhcp-server option
+add code=59 name=prov-url-v6 value="'http://[fcd1::beef]/'"
+/ipv6 dhcp-server
+# attach prov-url-v6 to the DHCPv6 server serving fcd1::/64, e.g.:
+# set [find name=dhcpv6-phones] dhcp-option=prov-url-v6
+```
+
+> The exact per-network attachment lines depend on your existing DHCP server
+> names; the `# set ...` comments show the pattern. Yealink reads option 66
+> directly and option 59 when provisioning over DHCPv6.
+
 ## Notes
 
 - The IPv6 trunk is intentionally NOT configured; the trunk stays IPv4 via DNAT.
+- The host's LAN interface must carry `fcd1::beef` so FreePBX (host networking)
+  answers HTTP provisioning on the ULA.
 - After adding rules, confirm placement with `/ip firewall filter print` and
   `/ipv6 firewall filter print` so they precede any default drop.
-- The PBX itself is firewalled by fail2ban (host-networked) in addition to these
-  router rules.
+- The PBX is also firewalled by fail2ban (host-networked) on top of these rules.
 ````
 
 - [ ] **Step 2: Verify the doc renders and has the required sections**
 
-Run: `grep -cE "^/ip firewall nat|^/ip firewall filter|^/ipv6 firewall filter" docs/mikrotik-rb5009-firewall.md`
-Expected: prints `3` (one of each chain block present).
+Run: `grep -cE "^/ip firewall nat|^/ip firewall filter|^/ipv6 firewall filter|^/ip dhcp-server option|^/ipv6 dhcp-server option" docs/mikrotik-rb5009-firewall.md && grep -q "103.51.112.38" docs/mikrotik-rb5009-firewall.md && grep -q "56600-56800" docs/mikrotik-rb5009-firewall.md && grep -q "fcd1::beef" docs/mikrotik-rb5009-firewall.md && echo OK`
+Expected: prints `5` then `OK` (all five RouterOS blocks present, concrete values embedded).
 
 - [ ] **Step 3: Commit**
 
@@ -302,7 +338,7 @@ iptables DNAT is used.
 | `80/tcp`          | HTTP     | dual-stack (IPv4 + IPv6) |
 | `443/tcp`         | HTTPS    | dual-stack (IPv4 + IPv6) |
 | `5060/udp`        | PJSIP    | dual-stack (IPv4 + IPv6) |
-| `16384-32767/udp` | RTP      | dual-stack (IPv4 + IPv6) |
+| `56600-56800/udp` | RTP      | dual-stack (IPv4 + IPv6) |
 
 Because RTP binds straight to the host, the large UDP range needs no special
 Docker handling. External IPv4 SIP-trunk reachability is provided by the site
@@ -359,10 +395,14 @@ IPv4 trunk advertises the correct public address:
    family.
 2. **Set IPv4 trunk NAT.** On the IPv4 transport / trunk set
    `external_signaling_address` and `external_media_address` to the Mikrotik's
-   **public IPv4**, and `local_net` to your LAN ranges (both the IPv4 subnet and
-   the IPv6 prefix). The port-forwarded IPv4 trunk then puts the public address
-   in SDP, while internal IPv6 phones receive the native LAN address.
-3. **Verify dual-stack listeners** on the host:
+   **public IPv4**, and `local_net` to your LAN ranges — both the IPv4 subnet and
+   the IPv6 ULA `fcd1::/64`. The port-forwarded IPv4 trunk then puts the public
+   address in SDP, while internal IPv6 phones receive the native LAN address.
+   The upstream trunk peer is `103.51.112.38`.
+3. **Set the RTP port range** (Settings → Asterisk SIP Settings → RTP) to
+   **`56600`–`56800`** so media matches the open range forwarded by the router.
+   A mismatch here silently breaks audio.
+4. **Verify dual-stack listeners** on the host:
    ```bash
    sudo ss -tlnp 'sport = :80'   # expect *:80 and [::]:80
    sudo ss -ulnp 'sport = :5060' # expect 0.0.0.0:5060 and [::]:5060
@@ -388,9 +428,66 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
+### Task 5: Document Yealink auto-provisioning over IPv6 ULA
+
+**Files:**
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: `docs/mikrotik-rb5009-firewall.md` DHCP section (Task 3) for the link.
+
+- [ ] **Step 1: Add the provisioning section to README**
+
+Immediately after the "Dual-stack SIP configuration (FreePBX)" section added in
+Task 4, add:
+
+```markdown
+## Phone auto-provisioning (Yealink, IPv6 ULA)
+
+Yealink phones fetch their config from FreePBX over the internal IPv6 ULA. The
+provisioning URL is advertised by the router's DHCP, served by FreePBX on the
+host's ULA address.
+
+**Prerequisites:**
+
+1. **Host ULA address.** The host's LAN interface must carry `fcd1::beef` (static
+   or via router RA/DHCPv6). Because FreePBX uses host networking, this is the
+   address that answers HTTP provisioning. Verify:
+   ```bash
+   ip -6 addr show scope global | grep -i 'fcd1::beef'
+   ```
+2. **FreePBX provisioning server.** Configure Endpoint Manager (or the template
+   provisioning path) so the per-MAC Yealink config is served from
+   `http://[fcd1::beef]/`.
+3. **DHCP advertises the URL.** The Mikrotik hands out the provisioning URL via
+   **both** IPv4 DHCP option 66 and DHCPv6 option 59 — see
+   [docs/mikrotik-rb5009-firewall.md](docs/mikrotik-rb5009-firewall.md) section 4.
+   Yealink reads option 66 directly and option 59 when provisioning over DHCPv6.
+
+**Phone-side check:** on the Yealink web UI, Settings → Auto Provision shows the
+server URL resolved to `http://[fcd1::beef]/`; a manual "Autoprovision Now"
+should pull the config without error.
+```
+
+- [ ] **Step 2: Verify the provisioning section exists and references the URL**
+
+Run: `grep -q "Phone auto-provisioning" README.md && grep -q "fcd1::beef" README.md && grep -q "option 66" README.md && grep -q "option 59" README.md && echo OK`
+Expected: prints `OK`.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add README.md
+git commit -m "docs: document Yealink auto-provisioning over IPv6 ULA
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+```
+
+---
+
 ## Final verification (after all tasks)
 
 - [ ] `docker compose config >/dev/null && echo OK` → `OK`
 - [ ] `bash -n run.sh && echo OK` → `OK`
-- [ ] `git log --oneline -4` shows the four task commits on branch `TERRY`
-- [ ] Operator smoke test (manual, off-repo): `sudo bash run.sh`; web UI reachable over LAN IPv6; an IPv6 phone registers; an IPv4 trunk call completes with two-way audio.
+- [ ] `git log --oneline -5` shows the five task commits on branch `TERRY`
+- [ ] Operator smoke test (manual, off-repo): `sudo bash run.sh`; web UI reachable over LAN IPv6; a Yealink phone auto-provisions from `http://[fcd1::beef]/`; an IPv6 phone registers; an IPv4 trunk call to/from `103.51.112.38` completes with two-way audio on RTP `56600-56800`.

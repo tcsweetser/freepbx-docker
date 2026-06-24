@@ -15,7 +15,14 @@ and is port-forwarded to the PBX by the site's Mikrotik RB5009 firewall.
 
 - LAN is dual-stack (IPv4 + IPv6) behind a Mikrotik RB5009.
 - Internal phones and FreePBX both sit on that LAN.
-- External SIP trunk is IPv4-only, reached via Mikrotik IPv4 port-forward to the PBX.
+- Internal phones use an **IPv6 ULA** prefix: `fcd1::/64`. FreePBX's provisioning
+  address on that prefix is `fcd1::beef` (the host LAN interface must carry it).
+- External SIP trunk is IPv4-only, source IP **`103.51.112.38`**, reached via
+  Mikrotik IPv4 port-forward. The router forwards `5060/udp` **only** from that
+  source.
+- RTP media range is **`56600-56800/udp`**, forwarded **open** (no source
+  restriction) for unknown media gateways. Asterisk's RTP range must be set to
+  match this in FreePBX.
 - Today FreePBX runs on a Docker bridge (`172.18.0.0/16`, static `.20`) with
   iptables DNAT in `run.sh` to expose the RTP media ports.
 
@@ -86,23 +93,42 @@ settings), not in repo files. The README will gain a section documenting:
    port-forwarded IPv4 trunk advertise the public address in SDP while internal
    IPv6 phones receive the native LAN address.
 
-## Mikrotik RB5009 firewall fragments (new deliverable)
+## Mikrotik RB5009 firewall + DHCP fragments (new deliverable)
 
 Add `docs/mikrotik-rb5009-firewall.md` containing copy-paste RouterOS v7
-fragments (with placeholder variables the operator substitutes):
+fragments with concrete values from this deployment (operator substitutes only
+WAN/LAN interface-list names and the PBX LAN IPv4):
 
-- **IPv4 trunk port-forward** (`/ip firewall nat`): DNAT 5060/udp + RTP range
-  from the WAN public IPv4 to the PBX LAN IPv4.
+- **IPv4 trunk port-forward** (`/ip firewall nat`):
+  - `5060/udp` DNAT **restricted to `src-address=103.51.112.38`** (trunk only).
+  - `56600-56800/udp` RTP DNAT **open** (no src-address) for unknown media
+    gateways.
 - **IPv4 filter** (`/ip firewall filter`): allow established/related and the
-  forwarded trunk ports to the PBX.
-- **IPv6 filter** (`/ipv6 firewall filter`): allow internal phones (LAN IPv6
-  prefix) to reach the PBX on 5060/udp + RTP + 80/443, and drop unsolicited
-  inbound IPv6 from WAN to the PBX.
-- Address-list and interface-list placeholders so the operator maps them to
-  their actual WAN/LAN interfaces and prefixes.
+  forwarded trunk + RTP ports to the PBX.
+- **IPv6 filter** (`/ipv6 firewall filter`): allow internal phones
+  (`fcd1::/64`) to reach the PBX (`fcd1::beef`) on `5060/udp`, `56600-56800/udp`,
+  and `80,443/tcp`; drop unsolicited inbound IPv6 from WAN.
+- **DHCP provisioning options** (both families, Yealink):
+  - `/ip dhcp-server option` — **option 66** carrying the IPv6 provisioning URL
+    literal `http://[fcd1::beef]/...`.
+  - `/ipv6 dhcp-server option` — **option 59** (bootfile-url) with the same URL.
 
 The fragments are documentation/configuration the operator applies on the router;
 they are not executed by this repo.
+
+## DHCP auto-provisioning + ULA addressing (new subsystem)
+
+- **Host ULA address:** the host's LAN interface must carry `fcd1::beef` (static
+  or via router RA/DHCPv6) so the host-networked FreePBX answers HTTP
+  provisioning on the ULA. Documented as an operator prerequisite (not a repo
+  file — it is host/router config).
+- **FreePBX provisioning server:** Yealink phones are provisioned from FreePBX
+  Endpoint Manager / the provisioning HTTP path; the URL handed out by DHCP
+  points to `http://[fcd1::beef]/`. Documented in README.
+- **Asterisk RTP range:** must be set to `56600-56800` (Asterisk SIP Settings →
+  RTP) to match the open router range. Documented in README as a required step.
+- **DHCP advertises both** option 66 (IPv4) and option 59 (DHCPv6) so a Yealink
+  phone provisions regardless of which family it uses for DHCP.
 
 ## README updates
 
