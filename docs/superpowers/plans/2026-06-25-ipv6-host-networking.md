@@ -16,7 +16,9 @@
 - 80/tcp, 443/tcp, 5060/udp MUST bind dual-stack (both IPv4 and IPv6).
 - RTP media port range: **`56600-56800/udp`**, forwarded **open** (no source restriction). Asterisk's RTP range must be set to match.
 - Internal phones use IPv6 ULA **`fcd1::/64`**; FreePBX provisioning address is **`fcd1::beef`** (the host LAN interface must carry it).
-- Yealink phones; DHCP advertises **both** option 66 (IPv4) and option 59 (DHCPv6), each pointing to `http://[fcd1::beef]/`.
+- FQDN is **`pbx.ieisi.org`** with a **public AAAA → `fcd1::beef`**. TLS cert via Let's Encrypt **DNS-01** (no inbound 80/443 from WAN).
+- Provisioning URL is **`https://pbx.ieisi.org/`** (primary, DHCP-advertised); **`http://[fcd1::beef]/`** is a documented manual fallback only.
+- Yealink phones; DHCP advertises **both** option 66 (IPv4) and option 59 (DHCPv6), each pointing to `https://pbx.ieisi.org/`.
 - `init.sql` and `my.cnf` MUST NOT change — the existing `freepbxuser'@'%'` grant already covers TCP from `127.0.0.1`.
 - No code is executed against the live router by this repo; RouterOS fragments are documentation only.
 - Conventional Commits; one commit per task.
@@ -266,19 +268,19 @@ add chain=forward in-interface-list=WAN dst-address-list=pbx-host action=drop \
 
 Hand the provisioning URL to phones over **both** families so a Yealink phone
 provisions regardless of which it uses. Option 66 (IPv4) and option 59 (DHCPv6)
-both point at the FreePBX ULA HTTP server.
+both point at the FQDN `https://pbx.ieisi.org/` (which resolves to `fcd1::beef`).
 
 ```routeros
-# IPv4 DHCP option 66 (TFTP/provisioning server) carrying the IPv6 URL literal.
+# IPv4 DHCP option 66 (provisioning server URL).
 /ip dhcp-server option
-add code=66 name=prov-url-v4 value="'http://[fcd1::beef]/'"
+add code=66 name=prov-url-v4 value="'https://pbx.ieisi.org/'"
 /ip dhcp-server network
 # attach the option to your phone LAN network entry, e.g.:
 # set [find address=192.168.88.0/24] dhcp-option=prov-url-v4
 
 # DHCPv6 option 59 (OPT_BOOTFILE_URL) with the same URL.
 /ipv6 dhcp-server option
-add code=59 name=prov-url-v6 value="'http://[fcd1::beef]/'"
+add code=59 name=prov-url-v6 value="'https://pbx.ieisi.org/'"
 /ipv6 dhcp-server
 # attach prov-url-v6 to the DHCPv6 server serving fcd1::/64, e.g.:
 # set [find name=dhcpv6-phones] dhcp-option=prov-url-v6
@@ -286,13 +288,24 @@ add code=59 name=prov-url-v6 value="'http://[fcd1::beef]/'"
 
 > The exact per-network attachment lines depend on your existing DHCP server
 > names; the `# set ...` comments show the pattern. Yealink reads option 66
-> directly and option 59 when provisioning over DHCPv6.
+> directly and option 59 when provisioning over DHCPv6. The `http://[fcd1::beef]/`
+> literal is a manual phone-side fallback (a TLS cert can't validate an IP
+> literal), so it is NOT advertised by DHCP.
+
+## DNS prerequisite
+
+`pbx.ieisi.org` must publish a **public AAAA → `fcd1::beef`** (at your DNS
+registrar/provider). The ULA is non-routable from the internet, so external
+clients get an unreachable address while internal phones resolve it and reach the
+PBX on-LAN. No split-horizon DNS is required. The TLS cert for `pbx.ieisi.org` is
+issued via Let's Encrypt **DNS-01** (TXT record at `_acme-challenge.pbx.ieisi.org`)
+— no inbound 80/443 from WAN is needed.
 
 ## Notes
 
 - The IPv6 trunk is intentionally NOT configured; the trunk stays IPv4 via DNAT.
 - The host's LAN interface must carry `fcd1::beef` so FreePBX (host networking)
-  answers HTTP provisioning on the ULA.
+  answers HTTPS provisioning on the ULA.
 - After adding rules, confirm placement with `/ip firewall filter print` and
   `/ipv6 firewall filter print` so they precede any default drop.
 - The PBX is also firewalled by fail2ban (host-networked) on top of these rules.
@@ -300,7 +313,7 @@ add code=59 name=prov-url-v6 value="'http://[fcd1::beef]/'"
 
 - [ ] **Step 2: Verify the doc renders and has the required sections**
 
-Run: `grep -cE "^/ip firewall nat|^/ip firewall filter|^/ipv6 firewall filter|^/ip dhcp-server option|^/ipv6 dhcp-server option" docs/mikrotik-rb5009-firewall.md && grep -q "103.51.112.38" docs/mikrotik-rb5009-firewall.md && grep -q "56600-56800" docs/mikrotik-rb5009-firewall.md && grep -q "fcd1::beef" docs/mikrotik-rb5009-firewall.md && echo OK`
+Run: `grep -cE "^/ip firewall nat|^/ip firewall filter|^/ipv6 firewall filter|^/ip dhcp-server option|^/ipv6 dhcp-server option" docs/mikrotik-rb5009-firewall.md && grep -q "103.51.112.38" docs/mikrotik-rb5009-firewall.md && grep -q "56600-56800" docs/mikrotik-rb5009-firewall.md && grep -q "fcd1::beef" docs/mikrotik-rb5009-firewall.md && grep -q "pbx.ieisi.org" docs/mikrotik-rb5009-firewall.md && echo OK`
 Expected: prints `5` then `OK` (all five RouterOS blocks present, concrete values embedded).
 
 - [ ] **Step 3: Commit**
@@ -428,57 +441,85 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-### Task 5: Document Yealink auto-provisioning over IPv6 ULA
+### Task 5: Document FQDN, DNS-01 TLS, and Yealink auto-provisioning
 
 **Files:**
 - Modify: `README.md`
 
 **Interfaces:**
-- Consumes: `docs/mikrotik-rb5009-firewall.md` DHCP section (Task 3) for the link.
+- Consumes: `docs/mikrotik-rb5009-firewall.md` DHCP/DNS section (Task 3) for the link.
 
-- [ ] **Step 1: Add the provisioning section to README**
+- [ ] **Step 1: Replace the README TLS step with DNS-01**
+
+In `README.md`, replace the existing TLS step (the `5. TLS support using Let's
+Encrypt DNS challenge` heading and its `certbot --apache` code block) with:
+
+```markdown
+5. TLS certificate for `pbx.ieisi.org` (Let's Encrypt DNS-01)
+
+The PBX is reachable only on the internal ULA (`fcd1::beef`), so it has no
+public-facing port — issue the cert with the **DNS-01** challenge (no inbound
+80/443 required):
+```bash
+# Example with certbot's manual DNS hook; use your DNS provider's plugin if available.
+sudo docker compose exec -it freepbx \
+  certbot certonly --manual --preferred-challenges dns \
+  -d pbx.ieisi.org --email your-email@email.com --agree-tos -n
+
+# Then point Apache's vhost at the issued cert/key and reload Apache.
+```
+Publish the required `TXT _acme-challenge.pbx.ieisi.org` record when prompted.
+Renewals also use DNS-01.
+```
+
+- [ ] **Step 2: Add the provisioning section to README**
 
 Immediately after the "Dual-stack SIP configuration (FreePBX)" section added in
 Task 4, add:
 
 ```markdown
-## Phone auto-provisioning (Yealink, IPv6 ULA)
+## Phone auto-provisioning (Yealink, IPv6 ULA + FQDN)
 
-Yealink phones fetch their config from FreePBX over the internal IPv6 ULA. The
-provisioning URL is advertised by the router's DHCP, served by FreePBX on the
-host's ULA address.
+Yealink phones fetch their config from FreePBX over the internal IPv6 ULA, using
+the FQDN so TLS validates. The provisioning URL is advertised by the router's
+DHCP and served by FreePBX on the host's ULA address.
 
 **Prerequisites:**
 
-1. **Host ULA address.** The host's LAN interface must carry `fcd1::beef` (static
+1. **Public DNS.** `pbx.ieisi.org` publishes a **public AAAA → `fcd1::beef`**.
+   The ULA is unreachable from the internet; internal phones resolve it and reach
+   the PBX on-LAN (no split-horizon needed).
+2. **Host ULA address.** The host's LAN interface must carry `fcd1::beef` (static
    or via router RA/DHCPv6). Because FreePBX uses host networking, this is the
-   address that answers HTTP provisioning. Verify:
+   address that answers provisioning. Verify:
    ```bash
    ip -6 addr show scope global | grep -i 'fcd1::beef'
    ```
-2. **FreePBX provisioning server.** Configure Endpoint Manager (or the template
-   provisioning path) so the per-MAC Yealink config is served from
-   `http://[fcd1::beef]/`.
-3. **DHCP advertises the URL.** The Mikrotik hands out the provisioning URL via
-   **both** IPv4 DHCP option 66 and DHCPv6 option 59 — see
+3. **FreePBX provisioning server.** Configure Endpoint Manager so the per-MAC
+   Yealink config is served from `https://pbx.ieisi.org/` (cert from step 5).
+4. **DHCP advertises the URL.** The Mikrotik hands out `https://pbx.ieisi.org/`
+   via **both** IPv4 DHCP option 66 and DHCPv6 option 59 — see
    [docs/mikrotik-rb5009-firewall.md](docs/mikrotik-rb5009-firewall.md) section 4.
    Yealink reads option 66 directly and option 59 when provisioning over DHCPv6.
 
+**Fallback:** for phones/firmware that cannot validate the cert, set the
+provisioning URL manually to `http://[fcd1::beef]/` (no TLS).
+
 **Phone-side check:** on the Yealink web UI, Settings → Auto Provision shows the
-server URL resolved to `http://[fcd1::beef]/`; a manual "Autoprovision Now"
-should pull the config without error.
+server URL `https://pbx.ieisi.org/`; a manual "Autoprovision Now" pulls the
+config without a cert error.
 ```
 
-- [ ] **Step 2: Verify the provisioning section exists and references the URL**
+- [ ] **Step 3: Verify the provisioning + TLS sections exist**
 
-Run: `grep -q "Phone auto-provisioning" README.md && grep -q "fcd1::beef" README.md && grep -q "option 66" README.md && grep -q "option 59" README.md && echo OK`
+Run: `grep -q "Phone auto-provisioning" README.md && grep -q "pbx.ieisi.org" README.md && grep -q "DNS-01" README.md && grep -q "option 66" README.md && grep -q "option 59" README.md && grep -q "fcd1::beef" README.md && echo OK`
 Expected: prints `OK`.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add README.md
-git commit -m "docs: document Yealink auto-provisioning over IPv6 ULA
+git commit -m "docs: document FQDN, DNS-01 TLS, and Yealink HTTPS provisioning
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -490,4 +531,4 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - [ ] `docker compose config >/dev/null && echo OK` → `OK`
 - [ ] `bash -n run.sh && echo OK` → `OK`
 - [ ] `git log --oneline -5` shows the five task commits on branch `TERRY`
-- [ ] Operator smoke test (manual, off-repo): `sudo bash run.sh`; web UI reachable over LAN IPv6; a Yealink phone auto-provisions from `http://[fcd1::beef]/`; an IPv6 phone registers; an IPv4 trunk call to/from `103.51.112.38` completes with two-way audio on RTP `56600-56800`.
+- [ ] Operator smoke test (manual, off-repo): `sudo bash run.sh`; `pbx.ieisi.org` resolves to `fcd1::beef` on the LAN and serves a valid TLS cert; a Yealink phone auto-provisions from `https://pbx.ieisi.org/`; an IPv6 phone registers; an IPv4 trunk call to/from `103.51.112.38` completes with two-way audio on RTP `56600-56800`.

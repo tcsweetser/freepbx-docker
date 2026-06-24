@@ -17,6 +17,12 @@ and is port-forwarded to the PBX by the site's Mikrotik RB5009 firewall.
 - Internal phones and FreePBX both sit on that LAN.
 - Internal phones use an **IPv6 ULA** prefix: `fcd1::/64`. FreePBX's provisioning
   address on that prefix is `fcd1::beef` (the host LAN interface must carry it).
+- Hostname/FQDN is **`pbx.ieisi.org`**, with a **public AAAA → `fcd1::beef`**.
+  Internal phones resolve the FQDN to the ULA and reach it on-LAN (no
+  split-horizon needed). TLS cert is issued for the FQDN via **DNS-01**
+  (the ULA host has no public-facing port, so HTTP-01 is not possible).
+- Provisioning is served at **`https://pbx.ieisi.org/`** (primary, cert-valid)
+  with **`http://[fcd1::beef]/`** as a documented manual fallback.
 - External SIP trunk is IPv4-only, source IP **`103.51.112.38`**, reached via
   Mikrotik IPv4 port-forward. The router forwards `5060/udp` **only** from that
   source.
@@ -109,9 +115,9 @@ WAN/LAN interface-list names and the PBX LAN IPv4):
   (`fcd1::/64`) to reach the PBX (`fcd1::beef`) on `5060/udp`, `56600-56800/udp`,
   and `80,443/tcp`; drop unsolicited inbound IPv6 from WAN.
 - **DHCP provisioning options** (both families, Yealink):
-  - `/ip dhcp-server option` — **option 66** carrying the IPv6 provisioning URL
-    literal `http://[fcd1::beef]/...`.
+  - `/ip dhcp-server option` — **option 66** carrying `https://pbx.ieisi.org/`.
   - `/ipv6 dhcp-server option` — **option 59** (bootfile-url) with the same URL.
+  - `http://[fcd1::beef]/` is a manual phone-side fallback, not a DHCP value.
 
 The fragments are documentation/configuration the operator applies on the router;
 they are not executed by this repo.
@@ -123,8 +129,12 @@ they are not executed by this repo.
   provisioning on the ULA. Documented as an operator prerequisite (not a repo
   file — it is host/router config).
 - **FreePBX provisioning server:** Yealink phones are provisioned from FreePBX
-  Endpoint Manager / the provisioning HTTP path; the URL handed out by DHCP
-  points to `http://[fcd1::beef]/`. Documented in README.
+  Endpoint Manager; the URL handed out by DHCP is `https://pbx.ieisi.org/`
+  (cert-valid), with `http://[fcd1::beef]/` as a manual fallback. Documented in
+  README.
+- **TLS cert:** issued for `pbx.ieisi.org` via Let's Encrypt **DNS-01** (the ULA
+  host has no public-facing port). README's existing HTTP-01 `certbot --apache`
+  step is replaced with DNS-01 guidance.
 - **Asterisk RTP range:** must be set to `56600-56800` (Asterisk SIP Settings →
   RTP) to match the open router range. Documented in README as a required step.
 - **DHCP advertises both** option 66 (IPv4) and option 59 (DHCPv6) so a Yealink
