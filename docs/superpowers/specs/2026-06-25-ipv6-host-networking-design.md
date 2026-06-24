@@ -132,9 +132,16 @@ they are not executed by this repo.
   Endpoint Manager; the URL handed out by DHCP is `https://pbx.ieisi.org/`
   (cert-valid), with `http://[fcd1::beef]/` as a manual fallback. Documented in
   README.
-- **TLS cert:** issued for `pbx.ieisi.org` via Let's Encrypt **DNS-01** (the ULA
-  host has no public-facing port). README's existing HTTP-01 `certbot --apache`
-  step is replaced with DNS-01 guidance.
+- **TLS cert:** issued for `pbx.ieisi.org` via Let's Encrypt **manual DNS-01**.
+  Run `certbot certonly --manual --preferred-challenges dns` **inside the freepbx
+  container**; the operator publishes the `_acme-challenge` TXT by hand at
+  Cloudflare, then certbot validates and issues. The cert persists in the
+  `etc_data` volume (`/etc/letsencrypt`); Apache's `pbx.ieisi.org` vhost points at
+  it. No inbound ports, no Cloudflare token, no MCP. **Renewal is manual (~90
+  days)** — re-run + republish TXT; can be automated later with a scoped
+  Cloudflare token + `--dns-cloudflare`. The `AAAA pbx.ieisi.org → fcd1::beef`
+  record is added by hand at Cloudflare. README's HTTP-01 `certbot --apache` step
+  is replaced with this guidance.
 - **Asterisk RTP range:** must be set to `56600-56800` (Asterisk SIP Settings →
   RTP) to match the open router range. Documented in README as a required step.
 - **DHCP advertises both** option 66 (IPv4) and option 59 (DHCPv6) so a Yealink

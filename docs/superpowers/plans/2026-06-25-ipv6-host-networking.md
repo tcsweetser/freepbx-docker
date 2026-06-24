@@ -16,7 +16,7 @@
 - 80/tcp, 443/tcp, 5060/udp MUST bind dual-stack (both IPv4 and IPv6).
 - RTP media port range: **`56600-56800/udp`**, forwarded **open** (no source restriction). Asterisk's RTP range must be set to match.
 - Internal phones use IPv6 ULA **`fcd1::/64`**; FreePBX provisioning address is **`fcd1::beef`** (the host LAN interface must carry it).
-- FQDN is **`pbx.ieisi.org`** with a **public AAAA → `fcd1::beef`**. TLS cert via Let's Encrypt **DNS-01** (no inbound 80/443 from WAN).
+- FQDN is **`pbx.ieisi.org`** with a **public AAAA → `fcd1::beef`** (added by hand at Cloudflare). TLS cert via Let's Encrypt **manual DNS-01**, issued inside the freepbx container into the `etc_data` volume; **renewal is manual (~90 days)**. No inbound ports, no Cloudflare token/MCP.
 - Provisioning URL is **`https://pbx.ieisi.org/`** (primary, DHCP-advertised); **`http://[fcd1::beef]/`** is a documented manual fallback only.
 - Yealink phones; DHCP advertises **both** option 66 (IPv4) and option 59 (DHCPv6), each pointing to `https://pbx.ieisi.org/`.
 - `init.sql` and `my.cnf` MUST NOT change — the existing `freepbxuser'@'%'` grant already covers TCP from `127.0.0.1`.
@@ -449,27 +449,35 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `docs/mikrotik-rb5009-firewall.md` DHCP/DNS section (Task 3) for the link.
 
-- [ ] **Step 1: Replace the README TLS step with DNS-01**
+- [ ] **Step 1: Replace the README TLS step with manual DNS-01**
 
 In `README.md`, replace the existing TLS step (the `5. TLS support using Let's
 Encrypt DNS challenge` heading and its `certbot --apache` code block) with:
 
 ```markdown
-5. TLS certificate for `pbx.ieisi.org` (Let's Encrypt DNS-01)
+5. TLS certificate for `pbx.ieisi.org` (Let's Encrypt, manual DNS-01)
 
 The PBX is reachable only on the internal ULA (`fcd1::beef`), so it has no
 public-facing port — issue the cert with the **DNS-01** challenge (no inbound
-80/443 required):
+80/443 required). Issue from inside the container; the cert persists in the
+`etc_data` volume under `/etc/letsencrypt`:
 ```bash
-# Example with certbot's manual DNS hook; use your DNS provider's plugin if available.
 sudo docker compose exec -it freepbx \
   certbot certonly --manual --preferred-challenges dns \
-  -d pbx.ieisi.org --email your-email@email.com --agree-tos -n
+  -d pbx.ieisi.org --email your-email@email.com --agree-tos
 
-# Then point Apache's vhost at the issued cert/key and reload Apache.
+# certbot prints a TXT name/value and PAUSES. In the Cloudflare dashboard add:
+#   Type=TXT  Name=_acme-challenge.pbx.ieisi.org  Value=<printed value>
+# Wait for it to propagate, then press Enter to let certbot validate and issue.
+
+# Point Apache's vhost (ServerName pbx.ieisi.org) at:
+#   /etc/letsencrypt/live/pbx.ieisi.org/fullchain.pem
+#   /etc/letsencrypt/live/pbx.ieisi.org/privkey.pem
+# then reload Apache.
 ```
-Publish the required `TXT _acme-challenge.pbx.ieisi.org` record when prompted.
-Renewals also use DNS-01.
+**Renewal is manual** (~every 90 days): re-run the same command and republish the
+TXT. Manual DNS-01 cannot be auto-renewed by `certbot renew`; automate later with
+a scoped Cloudflare API token + `--dns-cloudflare` if desired.
 ```
 
 - [ ] **Step 2: Add the provisioning section to README**
