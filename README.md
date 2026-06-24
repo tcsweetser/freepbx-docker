@@ -17,35 +17,29 @@ Upon starting this multi-container application, it will give you a turnkey PBX s
 * NodeJS v18.20.4
 * DAHDI channel not supported
 
-### Ports
-The following ports are exposed via Docker.
+### Networking model
+FreePBX runs with Docker **host networking**, so it binds directly to the host's
+LAN interfaces on both IPv4 and IPv6 (dual-stack). No Docker port-mapping or
+iptables DNAT is used.
 
-| Port              | Description |
-| ----------------- | ----------- |
-| `80/tcp`          | HTTP        |
-| `443/tcp`         | HTTPS       |
-| `5060/udp`        | PJSIP       |
+| Port              | Protocol | Binding |
+| ----------------- | -------- | --------------- |
+| `80/tcp`          | HTTP     | dual-stack (IPv4 + IPv6) |
+| `443/tcp`         | HTTPS    | dual-stack (IPv4 + IPv6) |
+| `5060/udp`        | PJSIP    | dual-stack (IPv4 + IPv6) |
+| `56600-56800/udp` | RTP      | dual-stack (IPv4 + IPv6) |
 
-RTP ports e.g. `16384-32767/udp` require a particular configuration in order to be
-properly exposed.\
-There's a [known issue](https://github.com/moby/moby/issues/11185) about Docker and its way to expose a large range of ports, since each port exposed loads another process into memory and you may be experiencing a low memory condition.\
-As a trade-off, those ports are going to be exposed via Docker host `iptables` manually.\
-So [run.sh](run.sh) will take care of iptables configuration, besides building and running the image.
+Because RTP binds straight to the host, the large UDP range needs no special
+Docker handling. External IPv4 SIP-trunk reachability is provided by the site
+router (see [Mikrotik RB5009 firewall fragments](docs/mikrotik-rb5009-firewall.md)).
+
+The MariaDB container stays on an internal Docker bridge and is published only to
+`127.0.0.1:3306` — it is never exposed on the LAN.
 
 ### Host requirements
-- `ip`, `iptables` and `awk` commands
-- iptables rules inside the Docker chains will bypass any firewall rule on the system
-- Iptables rules are temporary, unless you make them persistent in this way (Debian-like):
-```bash
-sudo apt-get update
-sudo apt-get install -y iptables-persistent
-sudo systemctl enable netfilter-persistent
-sudo systemctl restart netfilter-persistent
-sudo systemctl status netfilter-persistent
-
-# Everytime you make a change to iptables, remember to save to disk
-sudo sh -c 'iptables-save > /etc/iptables/rules.v4'
-```
+- Host networking enabled (Linux). FreePBX binds 80/443/5060 + RTP directly on
+  the host, dual-stack. No host iptables/DNAT rules are required by this project.
+- A dual-stack LAN (IPv4 + IPv6) if you want IPv6 phone registration.
 - Customize Fail2ban preferences by editing the file `fail2ban/jail.local`. Currently it bans 2 consecutive failed SIP registration attempts within 30 seconds for 1 week.
 
 - Make sure you have a valid DNS server for Docker containers by adding the following to `/etc/docker/daemon.json` (restart Docker after saving the file):
@@ -80,13 +74,9 @@ Then edit the value of `services.freepbx.image` in the [docker-compose.yaml](doc
 
 3. OPTION B: if you want to use the pre-built image on Docker Hub, jump to the next step directly
 
-4. Configure RTP ports on the host and build + run the Compose project:
+4. Build + run the Compose project (host networking; no iptables step):
 ```bash
 sudo bash run.sh
-# If you want to override the default RTP port range (16384-32767):
-sudo bash run.sh --rtp 10000-20000
-# NOTE
-# If you run the script with the default RTP range 16384-32767 and later rerun it with a different range, the iptables rules from the previous range remain in place and you have to delete those rules manually before or after applying the new range.
 
 # Install Freepbx
 sudo bash run.sh --install-freepbx
@@ -103,6 +93,32 @@ sudo docker compose exec -it freepbx certbot --apache -d your.domain.com --email
 
 Login to the web server's admin URL and start configuring the system!
 
+## Dual-stack SIP configuration (FreePBX)
+
+After first login, configure PJSIP so phones can register over IPv6 while the
+IPv4 trunk advertises the correct public address:
+
+1. **Add an IPv6 SIP transport.** Keep the default IPv4 transport
+   (`0.0.0.0:5060`) and add a second UDP transport bound to `[::]:5060`
+   (Settings → Asterisk SIP Settings → PJSIP). Phones then register over either
+   family.
+2. **Set IPv4 trunk NAT.** On the IPv4 transport / trunk set
+   `external_signaling_address` and `external_media_address` to the Mikrotik's
+   **public IPv4**, and `local_net` to your LAN ranges — both the IPv4 subnet and
+   the IPv6 ULA `fcd1::/64`. The port-forwarded IPv4 trunk then puts the public
+   address in SDP, while internal IPv6 phones receive the native LAN address.
+   The upstream trunk peer is `103.51.112.38`.
+3. **Set the RTP port range** (Settings → Asterisk SIP Settings → RTP) to
+   **`56600`–`56800`** so media matches the open range forwarded by the router.
+   A mismatch here silently breaks audio.
+4. **Verify dual-stack listeners** on the host:
+   ```bash
+   sudo ss -tlnp 'sport = :80'   # expect *:80 and [::]:80
+   sudo ss -ulnp 'sport = :5060' # expect 0.0.0.0:5060 and [::]:5060
+   ```
+
+Router-side firewall rules for the trunk and IPv6 phones are in
+[docs/mikrotik-rb5009-firewall.md](docs/mikrotik-rb5009-firewall.md).
 
 **If you find this project useful or inspiring**
 
