@@ -85,11 +85,28 @@ sudo bash run.sh --install-freepbx
 sudo bash run.sh --clean-all
 ```
 
-5. TLS support using Let's Encrypt DNS challenge
+5. TLS certificate for `pbx.ieisi.org` (Let's Encrypt, manual DNS-01)
+
+The PBX is reachable only on the internal ULA (`fcd1::beef`), so it has no
+public-facing port — issue the cert with the **DNS-01** challenge (no inbound
+80/443 required). Issue from inside the container; the cert persists in the
+`etc_data` volume under `/etc/letsencrypt`:
 ```bash
-# Make sure to have both 80 and 443 TCP ports allowed by the firewall and a valid DNS record A
-sudo docker compose exec -it freepbx certbot --apache -d your.domain.com --email your-email@email.com --agree-tos --redirect -n
+sudo docker compose exec -it freepbx \
+  certbot certonly --manual --preferred-challenges dns \
+  -d pbx.ieisi.org --email your-email@email.com --agree-tos
+
+# certbot prints a TXT name/value and PAUSES. In the Cloudflare dashboard add:
+#   Type=TXT  Name=_acme-challenge.pbx.ieisi.org  Value=<printed value>
+# Wait for it to propagate, then press Enter to let certbot validate and issue.
+
+# Point Apache's vhost (ServerName pbx.ieisi.org) at:
+#   /etc/letsencrypt/live/pbx.ieisi.org/fullchain.pem
+#   /etc/letsencrypt/live/pbx.ieisi.org/privkey.pem
+# then reload Apache.
 ```
+This first cert is a **bootstrap**. Manual DNS-01 cannot be auto-renewed, so the
+next section switches renewal to automated 45-day rotation via a Cloudflare token.
 
 Login to the web server's admin URL and start configuring the system!
 
@@ -119,6 +136,37 @@ IPv4 trunk advertises the correct public address:
 
 Router-side firewall rules for the trunk and IPv6 phones are in
 [docs/mikrotik-rb5009-firewall.md](docs/mikrotik-rb5009-firewall.md).
+
+## Phone auto-provisioning (Yealink, IPv6 ULA + FQDN)
+
+Yealink phones fetch their config from FreePBX over the internal IPv6 ULA, using
+the FQDN so TLS validates. The provisioning URL is advertised by the router's
+DHCP and served by FreePBX on the host's ULA address.
+
+**Prerequisites:**
+
+1. **Public DNS.** `pbx.ieisi.org` publishes a **public AAAA → `fcd1::beef`**.
+   The ULA is unreachable from the internet; internal phones resolve it and reach
+   the PBX on-LAN (no split-horizon needed).
+2. **Host ULA address.** The host's LAN interface must carry `fcd1::beef` (static
+   or via router RA/DHCPv6). Because FreePBX uses host networking, this is the
+   address that answers provisioning. Verify:
+   ```bash
+   ip -6 addr show scope global | grep -i 'fcd1::beef'
+   ```
+3. **FreePBX provisioning server.** Configure Endpoint Manager so the per-MAC
+   Yealink config is served from `https://pbx.ieisi.org/` (cert from step 5).
+4. **DHCP advertises the URL.** The Mikrotik hands out `https://pbx.ieisi.org/`
+   via **both** IPv4 DHCP option 66 and DHCPv6 option 59 — see
+   [docs/mikrotik-rb5009-firewall.md](docs/mikrotik-rb5009-firewall.md) section 4.
+   Yealink reads option 66 directly and option 59 when provisioning over DHCPv6.
+
+**Fallback:** for phones/firmware that cannot validate the cert, set the
+provisioning URL manually to `http://[fcd1::beef]/` (no TLS).
+
+**Phone-side check:** on the Yealink web UI, Settings → Auto Provision shows the
+server URL `https://pbx.ieisi.org/`; a manual "Autoprovision Now" pulls the
+config without a cert error.
 
 **If you find this project useful or inspiring**
 
