@@ -57,19 +57,52 @@ IPv4 trunk port-forward.
   the existing `freepbxuser'@'%'` grant in `init.sql`.
 - **No change to `init.sql` or `my.cnf`.**
 
+## Dual-stack binding requirement (80/443/5060)
+
+Under host networking, Docker no longer governs which address family a port binds
+to — the application does. All three service ports MUST listen on **both** IPv4
+and IPv6:
+
+- **80/tcp, 443/tcp (Apache):** Apache must have `Listen 80` / `Listen 443`
+  without an IPv4-only address prefix so it binds dual-stack (it listens on `::`
+  and accepts v4-mapped connections, or has explicit `Listen [::]:80` lines).
+  Documented as a verification step (check `ss -tlnp 'sport = :80'` shows `*` /
+  `[::]`).
+- **5060/udp (Asterisk PJSIP):** requires **two** PJSIP transports — one bound to
+  `0.0.0.0:5060` (IPv4) and one bound to `[::]:5060` (IPv6). FreePBX ships only
+  the IPv4 one by default.
+
 ## Asterisk / FreePBX-level configuration (README documentation only)
 
 These live in the `etc_data` / `var_data` volumes (FreePBX web UI / PJSIP
 settings), not in repo files. The README will gain a section documenting:
 
-1. **IPv6 SIP transport** — add a PJSIP transport bound to `[::]` so dual-stack
-   phones can register over IPv6 (FreePBX defaults to IPv4-only `0.0.0.0`).
-   Keep the existing IPv4 transport for IPv4 phones and the trunk.
+1. **Dual-stack SIP transports** — keep the default IPv4 PJSIP transport
+   (`0.0.0.0:5060`) and add a second transport bound to `[::]:5060` so phones
+   register over IPv6. Confirm Apache binds 80/443 dual-stack.
 2. **IPv4 trunk NAT** — on the IPv4 transport / trunk, set
    `external_signaling_address` and `external_media_address` to the Mikrotik's
    public IPv4, and `local_net` to the LAN ranges (IPv4 and IPv6). This makes the
    port-forwarded IPv4 trunk advertise the public address in SDP while internal
    IPv6 phones receive the native LAN address.
+
+## Mikrotik RB5009 firewall fragments (new deliverable)
+
+Add `docs/mikrotik-rb5009-firewall.md` containing copy-paste RouterOS v7
+fragments (with placeholder variables the operator substitutes):
+
+- **IPv4 trunk port-forward** (`/ip firewall nat`): DNAT 5060/udp + RTP range
+  from the WAN public IPv4 to the PBX LAN IPv4.
+- **IPv4 filter** (`/ip firewall filter`): allow established/related and the
+  forwarded trunk ports to the PBX.
+- **IPv6 filter** (`/ipv6 firewall filter`): allow internal phones (LAN IPv6
+  prefix) to reach the PBX on 5060/udp + RTP + 80/443, and drop unsolicited
+  inbound IPv6 from WAN to the PBX.
+- Address-list and interface-list placeholders so the operator maps them to
+  their actual WAN/LAN interfaces and prefixes.
+
+The fragments are documentation/configuration the operator applies on the router;
+they are not executed by this repo.
 
 ## README updates
 
@@ -79,6 +112,7 @@ settings), not in repo files. The README will gain a section documenting:
   just builds and starts the stack.
 - Add the Asterisk IPv6 transport + IPv4 trunk-NAT configuration section above.
 - Note the new DB exposure model (`127.0.0.1:3306` only).
+- Link to the new `docs/mikrotik-rb5009-firewall.md` from the README.
 
 ## Out of scope (YAGNI)
 
