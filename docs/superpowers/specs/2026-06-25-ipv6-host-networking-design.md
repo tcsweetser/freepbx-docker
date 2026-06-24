@@ -137,11 +137,18 @@ they are not executed by this repo.
   container**; the operator publishes the `_acme-challenge` TXT by hand at
   Cloudflare, then certbot validates and issues. The cert persists in the
   `etc_data` volume (`/etc/letsencrypt`); Apache's `pbx.ieisi.org` vhost points at
-  it. No inbound ports, no Cloudflare token, no MCP. **Renewal is manual (~90
-  days)** — re-run + republish TXT; can be automated later with a scoped
-  Cloudflare token + `--dns-cloudflare`. The `AAAA pbx.ieisi.org → fcd1::beef`
-  record is added by hand at Cloudflare. README's HTTP-01 `certbot --apache` step
-  is replaced with this guidance.
+  it. The first cert (manual TXT) is a **bootstrap**; the `AAAA pbx.ieisi.org →
+  fcd1::beef` record is added by hand at Cloudflare. README's HTTP-01
+  `certbot --apache` step is replaced with this guidance.
+- **Automated cert rotation (45-day):** steady-state renewal is unattended. A
+  scoped Cloudflare API token (`Zone:DNS:Edit` + `Zone:Read`) is mounted as the
+  Docker secret `cloudflare_dns_token`; the image bakes in
+  `python3-certbot-dns-cloudflare`. The cert is re-issued once with
+  `certbot --dns-cloudflare` (switching the renewal authenticator from `manual`),
+  `renew_before_expiry = 45 days` is set, and a daily **host systemd timer** (cron
+  alternative documented) runs `certbot renew` + graceful Apache reload. On a
+  90-day cert this rotates at the 45-day mark and self-heals missed runs. Token
+  file is gitignored; nothing is exposed inbound.
 - **Asterisk RTP range:** must be set to `56600-56800` (Asterisk SIP Settings →
   RTP) to match the open router range. Documented in README as a required step.
 - **DHCP advertises both** option 66 (IPv4) and option 59 (DHCPv6) so a Yealink

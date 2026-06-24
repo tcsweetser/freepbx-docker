@@ -16,7 +16,7 @@
 - 80/tcp, 443/tcp, 5060/udp MUST bind dual-stack (both IPv4 and IPv6).
 - RTP media port range: **`56600-56800/udp`**, forwarded **open** (no source restriction). Asterisk's RTP range must be set to match.
 - Internal phones use IPv6 ULA **`fcd1::/64`**; FreePBX provisioning address is **`fcd1::beef`** (the host LAN interface must carry it).
-- FQDN is **`pbx.ieisi.org`** with a **public AAAA → `fcd1::beef`** (added by hand at Cloudflare). TLS cert via Let's Encrypt **manual DNS-01**, issued inside the freepbx container into the `etc_data` volume; **renewal is manual (~90 days)**. No inbound ports, no Cloudflare token/MCP.
+- FQDN is **`pbx.ieisi.org`** with a **public AAAA → `fcd1::beef`** (added by hand at Cloudflare). First cert via Let's Encrypt **manual DNS-01** (bootstrap), issued inside the freepbx container into the `etc_data` volume. **Steady-state renewal is automated on a 45-day rotation** via `certbot --dns-cloudflare` + a daily host systemd timer (Task 6). No inbound ports.
 - Provisioning URL is **`https://pbx.ieisi.org/`** (primary, DHCP-advertised); **`http://[fcd1::beef]/`** is a documented manual fallback only.
 - Yealink phones; DHCP advertises **both** option 66 (IPv4) and option 59 (DHCPv6), each pointing to `https://pbx.ieisi.org/`.
 - `init.sql` and `my.cnf` MUST NOT change — the existing `freepbxuser'@'%'` grant already covers TCP from `127.0.0.1`.
@@ -475,9 +475,8 @@ sudo docker compose exec -it freepbx \
 #   /etc/letsencrypt/live/pbx.ieisi.org/privkey.pem
 # then reload Apache.
 ```
-**Renewal is manual** (~every 90 days): re-run the same command and republish the
-TXT. Manual DNS-01 cannot be auto-renewed by `certbot renew`; automate later with
-a scoped Cloudflare API token + `--dns-cloudflare` if desired.
+This first cert is a **bootstrap**. Manual DNS-01 cannot be auto-renewed, so the
+next section switches renewal to automated 45-day rotation via a Cloudflare token.
 ```
 
 - [ ] **Step 2: Add the provisioning section to README**
@@ -534,9 +533,199 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
+### Task 6: Automate cert rotation (Cloudflare DNS-01, 45-day)
+
+Adds unattended renewal. The first cert may still be bootstrapped via the manual
+TXT (Task 5); this task re-issues once with `--dns-cloudflare` to switch the
+renewal authenticator, then schedules a daily renew check that rotates the cert
+at the 45-day mark.
+
+**Files:**
+- Modify: `source/Dockerfile:34` (add the Cloudflare DNS plugin)
+- Modify: `docker-compose.yaml` (add the `cloudflare_dns_token` secret)
+- Modify: `.gitignore` (ignore the credentials file)
+- Create: `renew-cert.sh` (host renewal wrapper)
+- Create: `docs/systemd/freepbx-cert-renew.service`
+- Create: `docs/systemd/freepbx-cert-renew.timer`
+- Modify: `README.md` (automation section)
+
+**Interfaces:**
+- Consumes: the cert + Apache vhost from Task 5; the freepbx service from Task 1.
+- Produces: a Docker secret `cloudflare_dns_token` mounted at
+  `/run/secrets/cloudflare_dns_token`; a host script `renew-cert.sh`.
+
+- [ ] **Step 1: Bake the Cloudflare DNS plugin into the image**
+
+In `source/Dockerfile`, change line 34 from:
+
+```dockerfile
+  certbot python3-certbot-apache logrotate
+```
+
+to:
+
+```dockerfile
+  certbot python3-certbot-apache python3-certbot-dns-cloudflare logrotate
+```
+
+- [ ] **Step 2: Add the Cloudflare token as a Docker secret**
+
+In `docker-compose.yaml`, add to the top-level `secrets:` block:
+
+```yaml
+  cloudflare_dns_token:
+    file: cloudflare_dns_credentials.ini
+```
+
+and attach it to the `freepbx` service's `secrets:` list (mode `0400` so certbot
+does not warn about world-readable credentials):
+
+```yaml
+    secrets:
+      - postfix_sasl_passwd
+      - source: cloudflare_dns_token
+        target: cloudflare_dns_token
+        mode: 0400
+```
+
+- [ ] **Step 3: Gitignore the credentials file**
+
+Append to `.gitignore` (the existing `*.txt` rule does not cover `.ini`, and
+other `.ini` files in `source/odbc/` are tracked, so ignore it explicitly):
+
+```gitignore
+# Cloudflare DNS-01 API token (certbot)
+cloudflare_dns_credentials.ini
+```
+
+- [ ] **Step 4: Verify compose still parses and the secret is wired**
+
+Run: `docker compose config >/dev/null && grep -q "cloudflare_dns_token" docker-compose.yaml && grep -q "cloudflare_dns_credentials.ini" .gitignore && echo OK`
+Expected: prints `OK`.
+
+- [ ] **Step 5: Create the host renewal wrapper `renew-cert.sh`**
+
+Create `renew-cert.sh` at the repo root:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Daily Let's Encrypt renewal check for pbx.ieisi.org (Cloudflare DNS-01).
+# certbot renews only when inside the renew_before_expiry window (45 days),
+# then gracefully reloads Apache inside the freepbx container.
+cd "$(dirname "$(readlink -f "$0")")"
+
+sudo docker compose exec -T freepbx \
+    certbot renew --quiet \
+    --deploy-hook "apachectl -k graceful"
+```
+
+Then: `chmod +x renew-cert.sh`.
+
+- [ ] **Step 6: Verify the wrapper's syntax**
+
+Run: `bash -n renew-cert.sh && echo OK`
+Expected: prints `OK`.
+
+- [ ] **Step 7: Create the systemd units**
+
+Create `docs/systemd/freepbx-cert-renew.service`:
+
+```ini
+[Unit]
+Description=FreePBX Let's Encrypt renewal (Cloudflare DNS-01)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/terry/freepbx-docker/renew-cert.sh
+```
+
+Create `docs/systemd/freepbx-cert-renew.timer`:
+
+```ini
+[Unit]
+Description=Daily FreePBX cert renewal check
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+- [ ] **Step 8: Add the README automation section**
+
+After the TLS step (Usage step 5), add:
+
+```markdown
+### Automated certificate rotation (45-day, Cloudflare DNS-01)
+
+The manual cert above does not auto-renew. To rotate unattended:
+
+1. **Create a scoped Cloudflare API token** (`Zone:DNS:Edit` + `Zone:Read` on
+   `ieisi.org`) and write it to `cloudflare_dns_credentials.ini` (gitignored):
+   ```ini
+   dns_cloudflare_api_token = <your-token>
+   ```
+   Rebuild/recreate so the `cloudflare_dns_token` secret is mounted, and ensure
+   the image includes the DNS plugin (`python3-certbot-dns-cloudflare`).
+
+2. **Re-issue once with the DNS plugin** to switch the renewal authenticator from
+   `manual` to `dns-cloudflare`:
+   ```bash
+   sudo docker compose exec -it freepbx \
+     certbot certonly --dns-cloudflare \
+     --dns-cloudflare-credentials /run/secrets/cloudflare_dns_token \
+     -d pbx.ieisi.org --email your-email@email.com --agree-tos -n
+   ```
+
+3. **Set the 45-day rotation window** by adding this line to
+   `/etc/letsencrypt/renewal/pbx.ieisi.org.conf` inside the container:
+   ```
+   renew_before_expiry = 45 days
+   ```
+   On a 90-day cert, certbot then renews at 45 days remaining → a 45-day rotation.
+
+4. **Schedule the daily renew check** on the host. Either the systemd timer:
+   ```bash
+   sudo cp docs/systemd/freepbx-cert-renew.{service,timer} /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now freepbx-cert-renew.timer
+   systemctl list-timers freepbx-cert-renew.timer
+   ```
+   …or a cron alternative:
+   ```cron
+   17 3 * * * /home/terry/freepbx-docker/renew-cert.sh >> /var/log/freepbx-cert-renew.log 2>&1
+   ```
+   `renew-cert.sh` runs `certbot renew` in the container and gracefully reloads
+   Apache only when a renewal actually happens.
+```
+
+- [ ] **Step 9: Verify the README + units exist**
+
+Run: `grep -q "Automated certificate rotation" README.md && grep -q "renew_before_expiry = 45 days" README.md && test -f docs/systemd/freepbx-cert-renew.timer && grep -q "python3-certbot-dns-cloudflare" source/Dockerfile && echo OK`
+Expected: prints `OK`.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add source/Dockerfile docker-compose.yaml .gitignore renew-cert.sh docs/systemd/ README.md
+git commit -m "feat: automated 45-day cert rotation via Cloudflare DNS-01
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+```
+
+---
+
 ## Final verification (after all tasks)
 
 - [ ] `docker compose config >/dev/null && echo OK` → `OK`
-- [ ] `bash -n run.sh && echo OK` → `OK`
-- [ ] `git log --oneline -5` shows the five task commits on branch `TERRY`
+- [ ] `bash -n run.sh && bash -n renew-cert.sh && echo OK` → `OK`
+- [ ] `git log --oneline -6` shows the six task commits on branch `TERRY`
 - [ ] Operator smoke test (manual, off-repo): `sudo bash run.sh`; `pbx.ieisi.org` resolves to `fcd1::beef` on the LAN and serves a valid TLS cert; a Yealink phone auto-provisions from `https://pbx.ieisi.org/`; an IPv6 phone registers; an IPv4 trunk call to/from `103.51.112.38` completes with two-way audio on RTP `56600-56800`.
+- [ ] Renewal automation (operator): `systemctl list-timers freepbx-cert-renew.timer` shows it scheduled; `renew-cert.sh` dry-run (`docker compose exec -T freepbx certbot renew --dry-run`) succeeds via the Cloudflare DNS plugin; `renew_before_expiry = 45 days` is present in the renewal config.
