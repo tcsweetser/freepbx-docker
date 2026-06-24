@@ -38,8 +38,9 @@ services:
       - ./my.cnf:/etc/mysql/my.cnf:ro
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
-      defaultnet:
-        ipv4_address: 172.18.0.10
+      - defaultnet
+    ports:
+      - "127.0.0.1:3306:3306"
 
   freepbx:
     restart: always
@@ -47,13 +48,7 @@ services:
     volumes:
       - var_data:/var
       - etc_data:/etc
-    networks:
-      defaultnet:
-        ipv4_address: 172.18.0.20
-    ports:
-      - "80:80/tcp"
-      - "443:443/tcp"
-      - "5060:5060/udp"
+    network_mode: host
     secrets:
       - postfix_sasl_passwd
     depends_on:
