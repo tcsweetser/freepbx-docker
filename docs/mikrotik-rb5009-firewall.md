@@ -8,17 +8,20 @@ Verify rule ordering (RouterOS evaluates top-down; firewall rules must sit
 
 ## Values used here
 
+`<TOKEN>` values below are placeholders — see [`site.env.example`](../site.env.example)
+for what each one means and keep real values in your gitignored `site.env`.
+
 | Item | Value |
 | --- | --- |
-| SIP trunk source IPv4 | `103.51.112.38` |
+| SIP trunk source IPv4 | `<TRUNK_SRC_IP>` |
 | RTP media range (open) | `56600-56800/udp` |
-| Internal phone ULA prefix | `fcd1::/64` |
-| FreePBX provisioning ULA | `fcd1::beef` |
-| Provisioning URL | `http://[fcd1::beef]/` |
+| Internal phone ULA prefix | `<PBX_ULA_PREFIX>` |
+| FreePBX provisioning ULA | `<PBX_ULA>` |
+| Provisioning URL | `http://[<PBX_ULA>]/` |
 | `<PBX_LAN_IPV4>` (substitute) | PBX host LAN IPv4, e.g. `192.168.88.10` |
 | WAN / LAN | your interface-list names |
 
-> Note: `fcd1::/64` is in the `fc00::/8` half of ULA space (the strictly
+> Note: `<PBX_ULA_PREFIX>` is in the `fc00::/8` half of ULA space (the strictly
 > "correct" locally-assigned half is `fd00::/8`). It routes fine on a private
 > LAN; this is intentional for this deployment.
 
@@ -30,7 +33,7 @@ open for unknown media gateways.
 ```routeros
 /ip firewall nat
 add chain=dstnat in-interface-list=WAN protocol=udp dst-port=5060 \
-    src-address=103.51.112.38 action=dst-nat \
+    src-address=<TRUNK_SRC_IP> action=dst-nat \
     to-addresses=<PBX_LAN_IPV4> to-ports=5060 \
     comment="FreePBX: SIP trunk signalling (provider only)"
 add chain=dstnat in-interface-list=WAN protocol=udp dst-port=56600-56800 \
@@ -45,7 +48,7 @@ add chain=dstnat in-interface-list=WAN protocol=udp dst-port=56600-56800 \
 add chain=forward connection-state=established,related action=accept \
     comment="FreePBX: established/related"
 add chain=forward connection-nat-state=dstnat protocol=udp dst-port=5060 \
-    src-address=103.51.112.38 dst-address=<PBX_LAN_IPV4> action=accept \
+    src-address=<TRUNK_SRC_IP> dst-address=<PBX_LAN_IPV4> action=accept \
     comment="FreePBX: SIP trunk in (provider only)"
 add chain=forward connection-nat-state=dstnat protocol=udp dst-port=56600-56800 \
     dst-address=<PBX_LAN_IPV4> action=accept comment="FreePBX: RTP in (open)"
@@ -55,8 +58,8 @@ add chain=forward connection-nat-state=dstnat protocol=udp dst-port=56600-56800 
 
 ```routeros
 /ipv6 firewall address-list
-add list=pbx-host address=fcd1::beef comment="FreePBX host (ULA)"
-add list=lan-phones address=fcd1::/64 comment="Internal phones (ULA)"
+add list=pbx-host address=<PBX_ULA> comment="FreePBX host (ULA)"
+add list=lan-phones address=<PBX_ULA_PREFIX> comment="Internal phones (ULA)"
 
 /ipv6 firewall filter
 add chain=forward connection-state=established,related action=accept \
@@ -75,44 +78,45 @@ add chain=forward in-interface-list=WAN dst-address-list=pbx-host action=drop \
 
 Hand the provisioning URL to phones over **both** families so a Yealink phone
 provisions regardless of which it uses. Option 66 (IPv4) and option 59 (DHCPv6)
-both point at the FQDN `https://pbx.ieisi.org/` (which resolves to `fcd1::beef`).
+both point at the FQDN `https://<PBX_FQDN>/` (which resolves to `<PBX_ULA>`).
 
 ```routeros
 # IPv4 DHCP option 66 (provisioning server URL).
 /ip dhcp-server option
-add code=66 name=prov-url-v4 value="'https://pbx.ieisi.org/'"
+add code=66 name=prov-url-v4 value="'https://<PBX_FQDN>/'"
 /ip dhcp-server network
 # attach the option to your phone LAN network entry, e.g.:
 # set [find address=192.168.88.0/24] dhcp-option=prov-url-v4
 
 # DHCPv6 option 59 (OPT_BOOTFILE_URL) with the same URL.
 /ipv6 dhcp-server option
-add code=59 name=prov-url-v6 value="'https://pbx.ieisi.org/'"
+add code=59 name=prov-url-v6 value="'https://<PBX_FQDN>/'"
 /ipv6 dhcp-server
-# attach prov-url-v6 to the DHCPv6 server serving fcd1::/64, e.g.:
+# attach prov-url-v6 to the DHCPv6 server serving <PBX_ULA_PREFIX>, e.g.:
 # set [find name=dhcpv6-phones] dhcp-option=prov-url-v6
 ```
 
 > The exact per-network attachment lines depend on your existing DHCP server
 > names; the `# set ...` comments show the pattern. Yealink reads option 66
-> directly and option 59 when provisioning over DHCPv6. The `http://[fcd1::beef]/`
+> directly and option 59 when provisioning over DHCPv6. The `http://[<PBX_ULA>]/`
 > literal is a manual phone-side fallback (a TLS cert can't validate an IP
 > literal), so it is NOT advertised by DHCP.
 
 ## DNS prerequisite
 
-`pbx.ieisi.org` must publish a **public AAAA → `fcd1::beef`** (at your DNS
+`<PBX_FQDN>` must publish a **public AAAA → `<PBX_ULA>`** (at your DNS
 registrar/provider). The ULA is non-routable from the internet, so external
 clients get an unreachable address while internal phones resolve it and reach the
-PBX on-LAN. No split-horizon DNS is required. The TLS cert for `pbx.ieisi.org` is
-issued via Let's Encrypt **DNS-01** (TXT record at `_acme-challenge.pbx.ieisi.org`)
+PBX on-LAN. No split-horizon DNS is required. The TLS cert for `<PBX_FQDN>` is
+issued via Let's Encrypt **DNS-01** (TXT record at `_acme-challenge.<PBX_FQDN>`)
 — no inbound 80/443 from WAN is needed.
 
 ## Notes
 
 - The IPv6 trunk is intentionally NOT configured; the trunk stays IPv4 via DNAT.
-- The host's LAN interface must carry `fcd1::beef` so FreePBX (host networking)
+- The host's LAN interface must carry `<PBX_ULA>` so FreePBX (host networking)
   answers HTTPS provisioning on the ULA.
 - After adding rules, confirm placement with `/ip firewall filter print` and
   `/ipv6 firewall filter print` so they precede any default drop.
-- The PBX is also firewalled by fail2ban (host-networked) on top of these rules.
+- SIP brute-force protection relies on these firewall rules and the trunk
+  source-lock; there is no host-side fail2ban in this deployment.

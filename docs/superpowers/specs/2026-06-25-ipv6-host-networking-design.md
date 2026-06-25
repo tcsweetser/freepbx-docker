@@ -15,15 +15,15 @@ and is port-forwarded to the PBX by the site's Mikrotik RB5009 firewall.
 
 - LAN is dual-stack (IPv4 + IPv6) behind a Mikrotik RB5009.
 - Internal phones and FreePBX both sit on that LAN.
-- Internal phones use an **IPv6 ULA** prefix: `fcd1::/64`. FreePBX's provisioning
-  address on that prefix is `fcd1::beef` (the host LAN interface must carry it).
-- Hostname/FQDN is **`pbx.ieisi.org`**, with a **public AAAA → `fcd1::beef`**.
+- Internal phones use an **IPv6 ULA** prefix: `<PBX_ULA_PREFIX>`. FreePBX's provisioning
+  address on that prefix is `<PBX_ULA>` (the host LAN interface must carry it).
+- Hostname/FQDN is **`<PBX_FQDN>`**, with a **public AAAA → `<PBX_ULA>`**.
   Internal phones resolve the FQDN to the ULA and reach it on-LAN (no
   split-horizon needed). TLS cert is issued for the FQDN via **DNS-01**
   (the ULA host has no public-facing port, so HTTP-01 is not possible).
-- Provisioning is served at **`https://pbx.ieisi.org/`** (primary, cert-valid)
-  with **`http://[fcd1::beef]/`** as a documented manual fallback.
-- External SIP trunk is IPv4-only, source IP **`103.51.112.38`**, reached via
+- Provisioning is served at **`https://<PBX_FQDN>/`** (primary, cert-valid)
+  with **`http://[<PBX_ULA>]/`** as a documented manual fallback.
+- External SIP trunk is IPv4-only, source IP **`<TRUNK_SRC_IP>`**, reached via
   Mikrotik IPv4 port-forward. The router forwards `5060/udp` **only** from that
   source.
 - RTP media range is **`56600-56800/udp`**, forwarded **open** (no source
@@ -106,39 +106,39 @@ fragments with concrete values from this deployment (operator substitutes only
 WAN/LAN interface-list names and the PBX LAN IPv4):
 
 - **IPv4 trunk port-forward** (`/ip firewall nat`):
-  - `5060/udp` DNAT **restricted to `src-address=103.51.112.38`** (trunk only).
+  - `5060/udp` DNAT **restricted to `src-address=<TRUNK_SRC_IP>`** (trunk only).
   - `56600-56800/udp` RTP DNAT **open** (no src-address) for unknown media
     gateways.
 - **IPv4 filter** (`/ip firewall filter`): allow established/related and the
   forwarded trunk + RTP ports to the PBX.
 - **IPv6 filter** (`/ipv6 firewall filter`): allow internal phones
-  (`fcd1::/64`) to reach the PBX (`fcd1::beef`) on `5060/udp`, `56600-56800/udp`,
+  (`<PBX_ULA_PREFIX>`) to reach the PBX (`<PBX_ULA>`) on `5060/udp`, `56600-56800/udp`,
   and `80,443/tcp`; drop unsolicited inbound IPv6 from WAN.
 - **DHCP provisioning options** (both families, Yealink):
-  - `/ip dhcp-server option` — **option 66** carrying `https://pbx.ieisi.org/`.
+  - `/ip dhcp-server option` — **option 66** carrying `https://<PBX_FQDN>/`.
   - `/ipv6 dhcp-server option` — **option 59** (bootfile-url) with the same URL.
-  - `http://[fcd1::beef]/` is a manual phone-side fallback, not a DHCP value.
+  - `http://[<PBX_ULA>]/` is a manual phone-side fallback, not a DHCP value.
 
 The fragments are documentation/configuration the operator applies on the router;
 they are not executed by this repo.
 
 ## DHCP auto-provisioning + ULA addressing (new subsystem)
 
-- **Host ULA address:** the host's LAN interface must carry `fcd1::beef` (static
+- **Host ULA address:** the host's LAN interface must carry `<PBX_ULA>` (static
   or via router RA/DHCPv6) so the host-networked FreePBX answers HTTP
   provisioning on the ULA. Documented as an operator prerequisite (not a repo
   file — it is host/router config).
 - **FreePBX provisioning server:** Yealink phones are provisioned from FreePBX
-  Endpoint Manager; the URL handed out by DHCP is `https://pbx.ieisi.org/`
-  (cert-valid), with `http://[fcd1::beef]/` as a manual fallback. Documented in
+  Endpoint Manager; the URL handed out by DHCP is `https://<PBX_FQDN>/`
+  (cert-valid), with `http://[<PBX_ULA>]/` as a manual fallback. Documented in
   README.
-- **TLS cert:** issued for `pbx.ieisi.org` via Let's Encrypt **manual DNS-01**.
+- **TLS cert:** issued for `<PBX_FQDN>` via Let's Encrypt **manual DNS-01**.
   Run `certbot certonly --manual --preferred-challenges dns` **inside the freepbx
   container**; the operator publishes the `_acme-challenge` TXT by hand at
   Cloudflare, then certbot validates and issues. The cert persists in the
-  `etc_data` volume (`/etc/letsencrypt`); Apache's `pbx.ieisi.org` vhost points at
-  it. The first cert (manual TXT) is a **bootstrap**; the `AAAA pbx.ieisi.org →
-  fcd1::beef` record is added by hand at Cloudflare. README's HTTP-01
+  `etc_data` volume (`/etc/letsencrypt`); Apache's `<PBX_FQDN>` vhost points at
+  it. The first cert (manual TXT) is a **bootstrap**; the `AAAA <PBX_FQDN> →
+  <PBX_ULA>` record is added by hand at Cloudflare. README's HTTP-01
   `certbot --apache` step is replaced with this guidance.
 - **Automated cert rotation (45-day):** steady-state renewal is unattended. A
   scoped Cloudflare API token (`Zone:DNS:Edit` + `Zone:Read`) is mounted as the

@@ -11,14 +11,14 @@
 ## Global Constraints
 
 - External SIP trunk stays IPv4-only; reached via Mikrotik IPv4 port-forward. Do NOT add IPv6 trunk config.
-- SIP trunk source IP is **`103.51.112.38`**; router forwards `5060/udp` ONLY from that source.
+- SIP trunk source IP is **`<TRUNK_SRC_IP>`**; router forwards `5060/udp` ONLY from that source.
 - `db` MUST publish only to `127.0.0.1` — never `0.0.0.0`. The `127.0.0.1:` prefix is load-bearing.
 - 80/tcp, 443/tcp, 5060/udp MUST bind dual-stack (both IPv4 and IPv6).
 - RTP media port range: **`56600-56800/udp`**, forwarded **open** (no source restriction). Asterisk's RTP range must be set to match.
-- Internal phones use IPv6 ULA **`fcd1::/64`**; FreePBX provisioning address is **`fcd1::beef`** (the host LAN interface must carry it).
-- FQDN is **`pbx.ieisi.org`** with a **public AAAA → `fcd1::beef`** (added by hand at Cloudflare). First cert via Let's Encrypt **manual DNS-01** (bootstrap), issued inside the freepbx container into the `etc_data` volume. **Steady-state renewal is automated on a 45-day rotation** via `certbot --dns-cloudflare` + a daily host systemd timer (Task 6). No inbound ports.
-- Provisioning URL is **`https://pbx.ieisi.org/`** (primary, DHCP-advertised); **`http://[fcd1::beef]/`** is a documented manual fallback only.
-- Yealink phones; DHCP advertises **both** option 66 (IPv4) and option 59 (DHCPv6), each pointing to `https://pbx.ieisi.org/`.
+- Internal phones use IPv6 ULA **`<PBX_ULA_PREFIX>`**; FreePBX provisioning address is **`<PBX_ULA>`** (the host LAN interface must carry it).
+- FQDN is **`<PBX_FQDN>`** with a **public AAAA → `<PBX_ULA>`** (added by hand at Cloudflare). First cert via Let's Encrypt **manual DNS-01** (bootstrap), issued inside the freepbx container into the `etc_data` volume. **Steady-state renewal is automated on a 45-day rotation** via `certbot --dns-cloudflare` + a daily host systemd timer (Task 6). No inbound ports.
+- Provisioning URL is **`https://<PBX_FQDN>/`** (primary, DHCP-advertised); **`http://[<PBX_ULA>]/`** is a documented manual fallback only.
+- Yealink phones; DHCP advertises **both** option 66 (IPv4) and option 59 (DHCPv6), each pointing to `https://<PBX_FQDN>/`.
 - `init.sql` and `my.cnf` MUST NOT change — the existing `freepbxuser'@'%'` grant already covers TCP from `127.0.0.1`.
 - No code is executed against the live router by this repo; RouterOS fragments are documentation only.
 - Conventional Commits; one commit per task.
@@ -183,8 +183,8 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Produces: a doc path linked from README in Task 4 and Task 5. Uses the
-  deployment's concrete values (trunk `103.51.112.38`, RTP `56600-56800`,
-  ULA `fcd1::/64`, PBX `fcd1::beef`).
+  deployment's concrete values (trunk `<TRUNK_SRC_IP>`, RTP `56600-56800`,
+  ULA `<PBX_ULA_PREFIX>`, PBX `<PBX_ULA>`).
 
 - [ ] **Step 1: Create `docs/mikrotik-rb5009-firewall.md`**
 
@@ -203,15 +203,15 @@ Verify rule ordering (RouterOS evaluates top-down; firewall rules must sit
 
 | Item | Value |
 | --- | --- |
-| SIP trunk source IPv4 | `103.51.112.38` |
+| SIP trunk source IPv4 | `<TRUNK_SRC_IP>` |
 | RTP media range (open) | `56600-56800/udp` |
-| Internal phone ULA prefix | `fcd1::/64` |
-| FreePBX provisioning ULA | `fcd1::beef` |
-| Provisioning URL | `http://[fcd1::beef]/` |
+| Internal phone ULA prefix | `<PBX_ULA_PREFIX>` |
+| FreePBX provisioning ULA | `<PBX_ULA>` |
+| Provisioning URL | `http://[<PBX_ULA>]/` |
 | `<PBX_LAN_IPV4>` (substitute) | PBX host LAN IPv4, e.g. `192.168.88.10` |
 | WAN / LAN | your interface-list names |
 
-> Note: `fcd1::/64` is in the `fc00::/8` half of ULA space (the strictly
+> Note: `<PBX_ULA_PREFIX>` is in the `fc00::/8` half of ULA space (the strictly
 > "correct" locally-assigned half is `fd00::/8`). It routes fine on a private
 > LAN; this is intentional for this deployment.
 
@@ -223,7 +223,7 @@ open for unknown media gateways.
 ```routeros
 /ip firewall nat
 add chain=dstnat in-interface-list=WAN protocol=udp dst-port=5060 \
-    src-address=103.51.112.38 action=dst-nat \
+    src-address=<TRUNK_SRC_IP> action=dst-nat \
     to-addresses=<PBX_LAN_IPV4> to-ports=5060 \
     comment="FreePBX: SIP trunk signalling (provider only)"
 add chain=dstnat in-interface-list=WAN protocol=udp dst-port=56600-56800 \
@@ -238,7 +238,7 @@ add chain=dstnat in-interface-list=WAN protocol=udp dst-port=56600-56800 \
 add chain=forward connection-state=established,related action=accept \
     comment="FreePBX: established/related"
 add chain=forward connection-nat-state=dstnat protocol=udp dst-port=5060 \
-    src-address=103.51.112.38 dst-address=<PBX_LAN_IPV4> action=accept \
+    src-address=<TRUNK_SRC_IP> dst-address=<PBX_LAN_IPV4> action=accept \
     comment="FreePBX: SIP trunk in (provider only)"
 add chain=forward connection-nat-state=dstnat protocol=udp dst-port=56600-56800 \
     dst-address=<PBX_LAN_IPV4> action=accept comment="FreePBX: RTP in (open)"
@@ -248,8 +248,8 @@ add chain=forward connection-nat-state=dstnat protocol=udp dst-port=56600-56800 
 
 ```routeros
 /ipv6 firewall address-list
-add list=pbx-host address=fcd1::beef comment="FreePBX host (ULA)"
-add list=lan-phones address=fcd1::/64 comment="Internal phones (ULA)"
+add list=pbx-host address=<PBX_ULA> comment="FreePBX host (ULA)"
+add list=lan-phones address=<PBX_ULA_PREFIX> comment="Internal phones (ULA)"
 
 /ipv6 firewall filter
 add chain=forward connection-state=established,related action=accept \
@@ -268,43 +268,43 @@ add chain=forward in-interface-list=WAN dst-address-list=pbx-host action=drop \
 
 Hand the provisioning URL to phones over **both** families so a Yealink phone
 provisions regardless of which it uses. Option 66 (IPv4) and option 59 (DHCPv6)
-both point at the FQDN `https://pbx.ieisi.org/` (which resolves to `fcd1::beef`).
+both point at the FQDN `https://<PBX_FQDN>/` (which resolves to `<PBX_ULA>`).
 
 ```routeros
 # IPv4 DHCP option 66 (provisioning server URL).
 /ip dhcp-server option
-add code=66 name=prov-url-v4 value="'https://pbx.ieisi.org/'"
+add code=66 name=prov-url-v4 value="'https://<PBX_FQDN>/'"
 /ip dhcp-server network
 # attach the option to your phone LAN network entry, e.g.:
 # set [find address=192.168.88.0/24] dhcp-option=prov-url-v4
 
 # DHCPv6 option 59 (OPT_BOOTFILE_URL) with the same URL.
 /ipv6 dhcp-server option
-add code=59 name=prov-url-v6 value="'https://pbx.ieisi.org/'"
+add code=59 name=prov-url-v6 value="'https://<PBX_FQDN>/'"
 /ipv6 dhcp-server
-# attach prov-url-v6 to the DHCPv6 server serving fcd1::/64, e.g.:
+# attach prov-url-v6 to the DHCPv6 server serving <PBX_ULA_PREFIX>, e.g.:
 # set [find name=dhcpv6-phones] dhcp-option=prov-url-v6
 ```
 
 > The exact per-network attachment lines depend on your existing DHCP server
 > names; the `# set ...` comments show the pattern. Yealink reads option 66
-> directly and option 59 when provisioning over DHCPv6. The `http://[fcd1::beef]/`
+> directly and option 59 when provisioning over DHCPv6. The `http://[<PBX_ULA>]/`
 > literal is a manual phone-side fallback (a TLS cert can't validate an IP
 > literal), so it is NOT advertised by DHCP.
 
 ## DNS prerequisite
 
-`pbx.ieisi.org` must publish a **public AAAA → `fcd1::beef`** (at your DNS
+`<PBX_FQDN>` must publish a **public AAAA → `<PBX_ULA>`** (at your DNS
 registrar/provider). The ULA is non-routable from the internet, so external
 clients get an unreachable address while internal phones resolve it and reach the
-PBX on-LAN. No split-horizon DNS is required. The TLS cert for `pbx.ieisi.org` is
-issued via Let's Encrypt **DNS-01** (TXT record at `_acme-challenge.pbx.ieisi.org`)
+PBX on-LAN. No split-horizon DNS is required. The TLS cert for `<PBX_FQDN>` is
+issued via Let's Encrypt **DNS-01** (TXT record at `_acme-challenge.<PBX_FQDN>`)
 — no inbound 80/443 from WAN is needed.
 
 ## Notes
 
 - The IPv6 trunk is intentionally NOT configured; the trunk stays IPv4 via DNAT.
-- The host's LAN interface must carry `fcd1::beef` so FreePBX (host networking)
+- The host's LAN interface must carry `<PBX_ULA>` so FreePBX (host networking)
   answers HTTPS provisioning on the ULA.
 - After adding rules, confirm placement with `/ip firewall filter print` and
   `/ipv6 firewall filter print` so they precede any default drop.
@@ -313,7 +313,7 @@ issued via Let's Encrypt **DNS-01** (TXT record at `_acme-challenge.pbx.ieisi.or
 
 - [ ] **Step 2: Verify the doc renders and has the required sections**
 
-Run: `grep -cE "^/ip firewall nat|^/ip firewall filter|^/ipv6 firewall filter|^/ip dhcp-server option|^/ipv6 dhcp-server option" docs/mikrotik-rb5009-firewall.md && grep -q "103.51.112.38" docs/mikrotik-rb5009-firewall.md && grep -q "56600-56800" docs/mikrotik-rb5009-firewall.md && grep -q "fcd1::beef" docs/mikrotik-rb5009-firewall.md && grep -q "pbx.ieisi.org" docs/mikrotik-rb5009-firewall.md && echo OK`
+Run: `grep -cE "^/ip firewall nat|^/ip firewall filter|^/ipv6 firewall filter|^/ip dhcp-server option|^/ipv6 dhcp-server option" docs/mikrotik-rb5009-firewall.md && grep -q "<TRUNK_SRC_IP>" docs/mikrotik-rb5009-firewall.md && grep -q "56600-56800" docs/mikrotik-rb5009-firewall.md && grep -q "<PBX_ULA>" docs/mikrotik-rb5009-firewall.md && grep -q "<PBX_FQDN>" docs/mikrotik-rb5009-firewall.md && echo OK`
 Expected: prints `5` then `OK` (all five RouterOS blocks present, concrete values embedded).
 
 - [ ] **Step 3: Commit**
@@ -409,9 +409,9 @@ IPv4 trunk advertises the correct public address:
 2. **Set IPv4 trunk NAT.** On the IPv4 transport / trunk set
    `external_signaling_address` and `external_media_address` to the Mikrotik's
    **public IPv4**, and `local_net` to your LAN ranges — both the IPv4 subnet and
-   the IPv6 ULA `fcd1::/64`. The port-forwarded IPv4 trunk then puts the public
+   the IPv6 ULA `<PBX_ULA_PREFIX>`. The port-forwarded IPv4 trunk then puts the public
    address in SDP, while internal IPv6 phones receive the native LAN address.
-   The upstream trunk peer is `103.51.112.38`.
+   The upstream trunk peer is `<TRUNK_SRC_IP>`.
 3. **Set the RTP port range** (Settings → Asterisk SIP Settings → RTP) to
    **`56600`–`56800`** so media matches the open range forwarded by the router.
    A mismatch here silently breaks audio.
@@ -455,24 +455,24 @@ In `README.md`, replace the existing TLS step (the `5. TLS support using Let's
 Encrypt DNS challenge` heading and its `certbot --apache` code block) with:
 
 ```markdown
-5. TLS certificate for `pbx.ieisi.org` (Let's Encrypt, manual DNS-01)
+5. TLS certificate for `<PBX_FQDN>` (Let's Encrypt, manual DNS-01)
 
-The PBX is reachable only on the internal ULA (`fcd1::beef`), so it has no
+The PBX is reachable only on the internal ULA (`<PBX_ULA>`), so it has no
 public-facing port — issue the cert with the **DNS-01** challenge (no inbound
 80/443 required). Issue from inside the container; the cert persists in the
 `etc_data` volume under `/etc/letsencrypt`:
 ```bash
 sudo docker compose exec -it freepbx \
   certbot certonly --manual --preferred-challenges dns \
-  -d pbx.ieisi.org --email your-email@email.com --agree-tos
+  -d <PBX_FQDN> --email your-email@email.com --agree-tos
 
 # certbot prints a TXT name/value and PAUSES. In the Cloudflare dashboard add:
-#   Type=TXT  Name=_acme-challenge.pbx.ieisi.org  Value=<printed value>
+#   Type=TXT  Name=_acme-challenge.<PBX_FQDN>  Value=<printed value>
 # Wait for it to propagate, then press Enter to let certbot validate and issue.
 
-# Point Apache's vhost (ServerName pbx.ieisi.org) at:
-#   /etc/letsencrypt/live/pbx.ieisi.org/fullchain.pem
-#   /etc/letsencrypt/live/pbx.ieisi.org/privkey.pem
+# Point Apache's vhost (ServerName <PBX_FQDN>) at:
+#   /etc/letsencrypt/live/<PBX_FQDN>/fullchain.pem
+#   /etc/letsencrypt/live/<PBX_FQDN>/privkey.pem
 # then reload Apache.
 ```
 This first cert is a **bootstrap**. Manual DNS-01 cannot be auto-renewed, so the
@@ -493,33 +493,33 @@ DHCP and served by FreePBX on the host's ULA address.
 
 **Prerequisites:**
 
-1. **Public DNS.** `pbx.ieisi.org` publishes a **public AAAA → `fcd1::beef`**.
+1. **Public DNS.** `<PBX_FQDN>` publishes a **public AAAA → `<PBX_ULA>`**.
    The ULA is unreachable from the internet; internal phones resolve it and reach
    the PBX on-LAN (no split-horizon needed).
-2. **Host ULA address.** The host's LAN interface must carry `fcd1::beef` (static
+2. **Host ULA address.** The host's LAN interface must carry `<PBX_ULA>` (static
    or via router RA/DHCPv6). Because FreePBX uses host networking, this is the
    address that answers provisioning. Verify:
    ```bash
-   ip -6 addr show scope global | grep -i 'fcd1::beef'
+   ip -6 addr show scope global | grep -i '<PBX_ULA>'
    ```
 3. **FreePBX provisioning server.** Configure Endpoint Manager so the per-MAC
-   Yealink config is served from `https://pbx.ieisi.org/` (cert from step 5).
-4. **DHCP advertises the URL.** The Mikrotik hands out `https://pbx.ieisi.org/`
+   Yealink config is served from `https://<PBX_FQDN>/` (cert from step 5).
+4. **DHCP advertises the URL.** The Mikrotik hands out `https://<PBX_FQDN>/`
    via **both** IPv4 DHCP option 66 and DHCPv6 option 59 — see
    [docs/mikrotik-rb5009-firewall.md](docs/mikrotik-rb5009-firewall.md) section 4.
    Yealink reads option 66 directly and option 59 when provisioning over DHCPv6.
 
 **Fallback:** for phones/firmware that cannot validate the cert, set the
-provisioning URL manually to `http://[fcd1::beef]/` (no TLS).
+provisioning URL manually to `http://[<PBX_ULA>]/` (no TLS).
 
 **Phone-side check:** on the Yealink web UI, Settings → Auto Provision shows the
-server URL `https://pbx.ieisi.org/`; a manual "Autoprovision Now" pulls the
+server URL `https://<PBX_FQDN>/`; a manual "Autoprovision Now" pulls the
 config without a cert error.
 ```
 
 - [ ] **Step 3: Verify the provisioning + TLS sections exist**
 
-Run: `grep -q "Phone auto-provisioning" README.md && grep -q "pbx.ieisi.org" README.md && grep -q "DNS-01" README.md && grep -q "option 66" README.md && grep -q "option 59" README.md && grep -q "fcd1::beef" README.md && echo OK`
+Run: `grep -q "Phone auto-provisioning" README.md && grep -q "<PBX_FQDN>" README.md && grep -q "DNS-01" README.md && grep -q "option 66" README.md && grep -q "option 59" README.md && grep -q "<PBX_ULA>" README.md && echo OK`
 Expected: prints `OK`.
 
 - [ ] **Step 4: Commit**
@@ -611,7 +611,7 @@ Create `renew-cert.sh` at the repo root:
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Daily Let's Encrypt renewal check for pbx.ieisi.org (Cloudflare DNS-01).
+# Daily Let's Encrypt renewal check for <PBX_FQDN> (Cloudflare DNS-01).
 # certbot renews only when inside the renew_before_expiry window (45 days),
 # then gracefully reloads Apache inside the freepbx container.
 cd "$(dirname "$(readlink -f "$0")")"
@@ -668,7 +668,7 @@ After the TLS step (Usage step 5), add:
 The manual cert above does not auto-renew. To rotate unattended:
 
 1. **Create a scoped Cloudflare API token** (`Zone:DNS:Edit` + `Zone:Read` on
-   `ieisi.org`) and write it to `cloudflare_dns_credentials.ini` (gitignored):
+   `<DNS_ZONE>`) and write it to `cloudflare_dns_credentials.ini` (gitignored):
    ```ini
    dns_cloudflare_api_token = <your-token>
    ```
@@ -681,11 +681,11 @@ The manual cert above does not auto-renew. To rotate unattended:
    sudo docker compose exec -it freepbx \
      certbot certonly --dns-cloudflare \
      --dns-cloudflare-credentials /run/secrets/cloudflare_dns_token \
-     -d pbx.ieisi.org --email your-email@email.com --agree-tos -n
+     -d <PBX_FQDN> --email your-email@email.com --agree-tos -n
    ```
 
 3. **Set the 45-day rotation window** by adding this line to
-   `/etc/letsencrypt/renewal/pbx.ieisi.org.conf` inside the container:
+   `/etc/letsencrypt/renewal/<PBX_FQDN>.conf` inside the container:
    ```
    renew_before_expiry = 45 days
    ```
@@ -727,5 +727,5 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - [ ] `docker compose config >/dev/null && echo OK` → `OK`
 - [ ] `bash -n run.sh && bash -n renew-cert.sh && echo OK` → `OK`
 - [ ] `git log --oneline -6` shows the six task commits on branch `TERRY`
-- [ ] Operator smoke test (manual, off-repo): `sudo bash run.sh`; `pbx.ieisi.org` resolves to `fcd1::beef` on the LAN and serves a valid TLS cert; a Yealink phone auto-provisions from `https://pbx.ieisi.org/`; an IPv6 phone registers; an IPv4 trunk call to/from `103.51.112.38` completes with two-way audio on RTP `56600-56800`.
+- [ ] Operator smoke test (manual, off-repo): `sudo bash run.sh`; `<PBX_FQDN>` resolves to `<PBX_ULA>` on the LAN and serves a valid TLS cert; a Yealink phone auto-provisions from `https://<PBX_FQDN>/`; an IPv6 phone registers; an IPv4 trunk call to/from `<TRUNK_SRC_IP>` completes with two-way audio on RTP `56600-56800`.
 - [ ] Renewal automation (operator): `systemctl list-timers freepbx-cert-renew.timer` shows it scheduled; `renew-cert.sh` dry-run (`docker compose exec -T freepbx certbot renew --dry-run`) succeeds via the Cloudflare DNS plugin; `renew_before_expiry = 45 days` is present in the renewal config.

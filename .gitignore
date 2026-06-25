@@ -23,3 +23,11 @@ source/*.tgz
 
 # Cloudflare DNS-01 API token (certbot)
 cloudflare_dns_credentials.ini
+
+# Real deployment parameters (trunk IP, FQDN, ULA). Template: site.env.example
+site.env
+
+# not Claude
+.claude/
+.superpowers/
+
