@@ -46,7 +46,12 @@ services:
 
   freepbx:
     restart: always
-    image: escomputers/freepbx:17-nofail2ban
+    # Overlay the published image to add the certbot Cloudflare DNS plugin used
+    # by the DNS-01 cert workflow (see config/Dockerfile.freepbx).
+    build:
+      context: .
+      dockerfile: config/Dockerfile.freepbx
+    image: freepbx-dns-cloudflare:17
     # Wrap the image entrypoint with an idempotent init that re-applies the
     # host-networking port/postfix fixes on every boot (see config/freepbx-init.sh),
     # so they survive `docker compose down -v` instead of living only in etc_data.

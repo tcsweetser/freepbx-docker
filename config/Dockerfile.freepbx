@@ -1,0 +1,12 @@
+# Thin overlay on the published FreePBX image.
+#
+# The published escomputers/freepbx:17-nofail2ban image does NOT ship the
+# certbot Cloudflare DNS plugin, but the cert workflow (renew-cert.sh and the
+# README) issues/renews certs with DNS-01 *inside* this container. Adding the
+# plugin here keeps that design working and reproducible: it lives in the image
+# layer, so it survives container recreation (unlike an apt install at runtime).
+FROM escomputers/freepbx:17-nofail2ban
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3-certbot-dns-cloudflare \
+ && rm -rf /var/lib/apt/lists/*
