@@ -23,8 +23,8 @@ iptables DNAT is used.
 
 | Port              | Protocol | Binding |
 | ----------------- | -------- | --------------- |
-| `80/tcp`          | HTTP     | dual-stack (IPv4 + IPv6) |
-| `443/tcp`         | HTTPS    | dual-stack (IPv4 + IPv6) |
+| `8082/tcp`        | HTTP     | dual-stack (IPv4 + IPv6) |
+| `8443/tcp`        | HTTPS    | dual-stack (IPv4 + IPv6) |
 | `5060/udp`        | PJSIP    | dual-stack (IPv4 + IPv6) |
 | `56600-56800/udp` | RTP      | dual-stack (IPv4 + IPv6) |
 
@@ -36,8 +36,9 @@ The MariaDB container stays on an internal Docker bridge and is published only t
 `127.0.0.1:3306` — it is never exposed on the LAN.
 
 ### Host requirements
-- Host networking enabled (Linux). FreePBX binds 80/443/5060 + RTP directly on
-  the host, dual-stack. No host iptables/DNAT rules are required by this project.
+- Host networking enabled (Linux). FreePBX binds 8082/8443/5060 + RTP directly on
+  the host, dual-stack (Apache uses 8082/8443 rather than 80/443 to avoid clashing
+  with other host services). No host iptables/DNAT rules are required by this project.
 - A dual-stack LAN (IPv4 + IPv6) if you want IPv6 phone registration.
 
 - Make sure you have a valid DNS server for Docker containers by adding the following to `/etc/docker/daemon.json` (restart Docker after saving the file):
@@ -104,13 +105,19 @@ sudo docker compose exec -it freepbx \
 #   Type=TXT  Name=_acme-challenge.<PBX_FQDN>  Value=<printed value>
 # Wait for it to propagate, then press Enter to let certbot validate and issue.
 
-# Point Apache's vhost (ServerName <PBX_FQDN>) at:
-#   /etc/letsencrypt/live/<PBX_FQDN>/fullchain.pem
-#   /etc/letsencrypt/live/<PBX_FQDN>/privkey.pem
-# then reload Apache.
+# Apache is wired to the cert automatically: config/freepbx-init.sh points the
+# SSL vhost at /etc/letsencrypt/live/<PBX_FQDN>/{fullchain,privkey}.pem when that
+# cert exists (PBX_FQDN comes from site.env), else it serves a self-signed cert.
+# After the FIRST issuance, apply it with:
+#   sudo docker compose restart freepbx
+# Later certbot renewals reload Apache in place (no restart needed).
 ```
 This first cert is a **bootstrap**. Manual DNS-01 cannot be auto-renewed, so the
 next section switches renewal to automated 45-day rotation via a Cloudflare token.
+
+> Apache listens on `8082` (HTTP) and `8443` (HTTPS), not 80/443, because the
+> host already runs other services there; see `config/freepbx-init.sh`. Front
+> these with the host reverse proxy or reach them directly on those ports.
 
 Login to the web server's admin URL and start configuring the system!
 
@@ -176,7 +183,8 @@ IPv4 trunk advertises the correct public address:
    A mismatch here silently breaks audio.
 4. **Verify dual-stack listeners** on the host:
    ```bash
-   sudo ss -tlnp 'sport = :80'   # expect *:80 and [::]:80
+   sudo ss -tlnp 'sport = :8082' # expect *:8082 and [::]:8082 (Apache HTTP)
+   sudo ss -tlnp 'sport = :8443' # expect *:8443 and [::]:8443 (Apache HTTPS)
    sudo ss -ulnp 'sport = :5060' # expect 0.0.0.0:5060 and [::]:5060
    ```
 

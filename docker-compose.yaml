@@ -11,8 +11,8 @@ networks:
     ipam:
       driver: default
       config:
-        - subnet: 172.18.0.0/16
-          gateway: 172.18.0.1
+        - subnet: 172.88.0.0/16
+          gateway: 172.88.0.1
 
 secrets:
   mysql_root_password:
@@ -47,9 +47,21 @@ services:
   freepbx:
     restart: always
     image: escomputers/freepbx:17-nofail2ban
+    # Wrap the image entrypoint with an idempotent init that re-applies the
+    # host-networking port/postfix fixes on every boot (see config/freepbx-init.sh),
+    # so they survive `docker compose down -v` instead of living only in etc_data.
+    entrypoint: ["/usr/bin/env", "bash", "/usr/local/src/freepbx-init.sh"]
+    command: ["/usr/bin/env", "bash", "/usr/local/src/entrypoint.sh"]
+    # PBX_FQDN (from gitignored site.env) lets the init script point apache at the
+    # Let's Encrypt cert for that FQDN once it exists. Optional so a fresh checkout
+    # without site.env still boots (it falls back to the self-signed cert).
+    env_file:
+      - path: site.env
+        required: false
     volumes:
       - var_data:/var
       - etc_data:/etc
+      - ./config/freepbx-init.sh:/usr/local/src/freepbx-init.sh:ro
     network_mode: host
     secrets:
       - postfix_sasl_passwd
