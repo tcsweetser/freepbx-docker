@@ -20,3 +20,6 @@ source/*.tgz
 
 # Built Visual Studio Code Extensions
 *.vsix
+
+# Cloudflare DNS-01 API token (certbot)
+cloudflare_dns_credentials.ini

@@ -31,7 +31,7 @@ RUN apt-get update && apt-get -y install \
   libical-dev libneon27-dev libsrtp2-dev libspandsp-dev libtool-bin \
   nodejs npm ipset iptables php-soap \
   postfix libsasl2-modules mailutils \
-  certbot python3-certbot-apache logrotate
+  certbot python3-certbot-apache python3-certbot-dns-cloudflare logrotate
 
 # Download and build Asterisk directly in this stage
 RUN set -eux \

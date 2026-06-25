@@ -110,6 +110,48 @@ next section switches renewal to automated 45-day rotation via a Cloudflare toke
 
 Login to the web server's admin URL and start configuring the system!
 
+### Automated certificate rotation (45-day, Cloudflare DNS-01)
+
+The manual cert above does not auto-renew. To rotate unattended:
+
+1. **Create a scoped Cloudflare API token** (`Zone:DNS:Edit` + `Zone:Read` on
+   `ieisi.org`) and write it to `cloudflare_dns_credentials.ini` (gitignored):
+   ```ini
+   dns_cloudflare_api_token = <your-token>
+   ```
+   Rebuild/recreate so the `cloudflare_dns_token` secret is mounted, and ensure
+   the image includes the DNS plugin (`python3-certbot-dns-cloudflare`).
+
+2. **Re-issue once with the DNS plugin** to switch the renewal authenticator from
+   `manual` to `dns-cloudflare`:
+   ```bash
+   sudo docker compose exec -it freepbx \
+     certbot certonly --dns-cloudflare \
+     --dns-cloudflare-credentials /run/secrets/cloudflare_dns_token \
+     -d pbx.ieisi.org --email your-email@email.com --agree-tos -n
+   ```
+
+3. **Set the 45-day rotation window** by adding this line to
+   `/etc/letsencrypt/renewal/pbx.ieisi.org.conf` inside the container:
+   ```
+   renew_before_expiry = 45 days
+   ```
+   On a 90-day cert, certbot then renews at 45 days remaining → a 45-day rotation.
+
+4. **Schedule the daily renew check** on the host. Either the systemd timer:
+   ```bash
+   sudo cp docs/systemd/freepbx-cert-renew.{service,timer} /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now freepbx-cert-renew.timer
+   systemctl list-timers freepbx-cert-renew.timer
+   ```
+   …or a cron alternative:
+   ```cron
+   17 3 * * * /home/terry/freepbx-docker/renew-cert.sh >> /var/log/freepbx-cert-renew.log 2>&1
+   ```
+   `renew-cert.sh` runs `certbot renew` in the container and gracefully reloads
+   Apache only when a renewal actually happens.
+
 ## Dual-stack SIP configuration (FreePBX)
 
 After first login, configure PJSIP so phones can register over IPv6 while the

@@ -21,6 +21,8 @@ secrets:
     file: freepbxuser_password.txt
   postfix_sasl_passwd:
     file: sasl_passwd.txt
+  cloudflare_dns_token:
+    file: cloudflare_dns_credentials.ini
 
 services:
   db:
@@ -51,6 +53,9 @@ services:
     network_mode: host
     secrets:
       - postfix_sasl_passwd
+      - source: cloudflare_dns_token
+        target: cloudflare_dns_token
+        mode: 0400
     depends_on:
       - db
 

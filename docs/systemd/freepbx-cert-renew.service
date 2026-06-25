@@ -1,0 +1,8 @@
+[Unit]
+Description=FreePBX Let's Encrypt renewal (Cloudflare DNS-01)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/terry/freepbx-docker/renew-cert.sh
