@@ -62,5 +62,29 @@ fi
 # Fail fast if our edits produced an invalid apache config.
 apache2ctl configtest
 
+# --- Asterisk: IPv6 PJSIP transport for native dual-stack registration --------
+# FreePBX only generates an IPv4 transport ([0.0.0.0-udp]); without a [::]
+# transport, IPv6-only (LAN ULA) phones have nothing to register against.
+# This lives in a FreePBX *_custom.conf include, which FreePBX never overwrites
+# and auto-includes from the generated pjsip.transports.conf on `fwconsole
+# reload`. Written here (not just in the volume) so a fresh `down -v` self-heals.
+# Idempotent: only (re)written when the [::-udp] section is absent.
+transports_custom=/etc/asterisk/pjsip.transports_custom.conf
+mkdir -p /etc/asterisk
+if ! grep -q '^\[::-udp\]' "$transports_custom" 2>/dev/null; then
+  cat >> "$transports_custom" <<'EOF'
+; IPv6 UDP SIP transport for native dual-stack registration (LAN ULA phones).
+; FreePBX does not generate a [::] transport by default; this include is
+; managed by freepbx-init.sh and read via FreePBX's *_custom.conf mechanism.
+[::-udp]
+type=transport
+protocol=udp
+bind=[::]:5060
+EOF
+  echo "[freepbx-init] Asterisk: added IPv6 [::-udp] PJSIP transport"
+else
+  echo "[freepbx-init] Asterisk: IPv6 [::-udp] PJSIP transport already present"
+fi
+
 echo "[freepbx-init] done; handing off to image entrypoint"
 exec "$@"

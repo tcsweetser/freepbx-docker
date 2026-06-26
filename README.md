@@ -168,10 +168,13 @@ The manual cert above does not auto-renew. To rotate unattended:
 After first login, configure PJSIP so phones can register over IPv6 while the
 IPv4 trunk advertises the correct public address:
 
-1. **Add an IPv6 SIP transport.** Keep the default IPv4 transport
-   (`0.0.0.0:5060`) and add a second UDP transport bound to `[::]:5060`
-   (Settings → Asterisk SIP Settings → PJSIP). Phones then register over either
-   family.
+1. **IPv6 SIP transport — already handled.** FreePBX only generates the IPv4
+   transport (`0.0.0.0:5060`). The `[::]:5060` transport needed for IPv6-only
+   phone registration is added automatically on every boot by
+   [`config/freepbx-init.sh`](config/freepbx-init.sh) (written to the FreePBX
+   `pjsip.transports_custom.conf` include), so it survives `docker compose down -v`.
+   No GUI step is required; the equivalent manual path is Settings → Asterisk SIP
+   Settings → PJSIP. *Verified: phones register over IPv6-only.*
 2. **Set IPv4 trunk NAT.** On the IPv4 transport / trunk set
    `external_signaling_address` and `external_media_address` to the Mikrotik's
    **public IPv4**, and `local_net` to your LAN ranges — both the IPv4 subnet and
@@ -190,6 +193,28 @@ IPv4 trunk advertises the correct public address:
 
 Router-side firewall rules for the trunk and IPv6 phones are in
 [docs/mikrotik-rb5009-firewall.md](docs/mikrotik-rb5009-firewall.md).
+
+### Rebuilding from a wiped database (`down -v`)
+
+`docker compose down -v` deletes the named volumes, including the MariaDB
+`asterisk` database — so the FreePBX application config (extensions, trunks,
+routes) is **not** reproducible from the repo and must be recreated in the GUI.
+Infrastructure-level fixes *are* reproducible: Apache ports, postfix, the TLS
+cert wiring, and the IPv6 SIP transport are all re-applied automatically by
+`config/freepbx-init.sh` on first boot.
+
+The one captured trunk-level value is the Leaptel registration retry backoff. After
+recreating the Leaptel trunk, re-apply it so the rejected registration doesn't spam
+the log every 30–60s:
+
+```bash
+PW=$(cat mysql_root_password.txt)
+sudo docker compose exec -T db sh -c "mysql -uroot -p'$PW' asterisk" < config/sql/leaptel-trunk-tweaks.sql
+sudo docker compose exec -T freepbx fwconsole reload
+```
+
+See [`config/sql/leaptel-trunk-tweaks.sql`](config/sql/leaptel-trunk-tweaks.sql)
+for what it sets and why.
 
 ## Phone auto-provisioning (Yealink, IPv6 ULA + FQDN)
 
