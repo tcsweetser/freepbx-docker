@@ -8,12 +8,25 @@
 --   re-apply is exact and auditable instead of remembered.
 --
 -- What it does:
---   Backs the registration retry intervals off from the noisy defaults
---   (30s/30s/60s) to 600s. Reason: the upstream Leaptel registration is currently
---   rejected (provider-side credential issue, see memory leaptel-trunk-403), and
---   the fast retries spam the Asterisk log with 401/403 every ~30-60s. 600s keeps
---   the trunk trying without the noise. Inbound calls are unaffected: they arrive
---   via the IP `identify` (103.51.112.38/32), not via this registration.
+--
+--   1. media_encryption = no  (REQUIRED for calls to work)
+--      FreePBX defaulted this trunk to `sdes`, which makes Asterisk demand SRTP
+--      (RTP/SAVP + a=crypto). Leaptel offers plain unencrypted media (RTP/AVP), so
+--      SDES negotiated to nothing and every call was rejected with
+--      `488 Not Acceptable Here` / "Couldn't negotiate stream ... (nothing)". This
+--      looked like a codec problem but was purely the encryption mismatch; alaw was
+--      always in the allow list. Setting it to `no` lets alaw negotiate over plain
+--      RTP, which is standard for an ITSP trunk. Verified: inbound call rings and
+--      answers with `RTP/AVP 8` (PCMA/alaw). See memory leaptel-codec-encryption.
+--
+--   2. Registration retry intervals = 600s
+--      Backs the retry intervals off from the noisy FreePBX defaults (30s/30s/60s).
+--      The trunk registers successfully now, so on the happy path re-registration
+--      follows the registration expiry, not these values; they only govern the
+--      retry cadence *after a failed* attempt. 600s keeps failure-retry log noise
+--      down. Drop these back toward 30-60s if you want faster recovery after an
+--      outage. Inbound calls arrive via the IP `identify` (103.51.112.38/32) and are
+--      unaffected by registration state either way.
 --
 -- Keyed on the trunk NAME, not its numeric id, so it survives a different trunkid
 -- being assigned when the trunk is recreated.
@@ -25,6 +38,13 @@
 --
 -- Idempotent: re-running it just re-sets the same values.
 
+-- 1. Plain RTP: Leaptel offers RTP/AVP, so SDES must be off or calls 488.
+UPDATE pjsip
+SET data = 'no'
+WHERE keyword = 'media_encryption'
+  AND id IN (SELECT trunkid FROM trunks WHERE name = 'Leaptel' AND tech = 'pjsip');
+
+-- 2. Quiet the registration failure-retry cadence.
 UPDATE pjsip
 SET data = '600'
 WHERE keyword IN ('retry_interval', 'forbidden_retry_interval', 'fatal_retry_interval')
