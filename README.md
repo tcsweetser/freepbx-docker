@@ -227,6 +227,11 @@ creating virtual extension 900 and setting the address for voicemail alert
 emails. Alert emails carry the recording as MP3 (replacing the WAV) via
 `config/vm-mp3-sendmail.py`, which the init script sets as the voicemail `mailcmd`.
 
+Logging is kept to errors and warnings only, for both Asterisk and FreePBX.
+After a rebuild, re-apply [config/sql/logging-minimal.sql](config/sql/logging-minimal.sql)
+(same `mysql` + `fwconsole reload` steps). Its header also lists the temporary
+commands for tracing a call, none of which survive a restart.
+
 See [`config/sql/leaptel-trunk-tweaks.sql`](config/sql/leaptel-trunk-tweaks.sql)
 for what it sets and why.
 
