@@ -27,6 +27,9 @@ cloudflare_dns_credentials.ini
 # Real deployment parameters (trunk IP, FQDN, ULA). Template: site.env.example
 site.env
 
+# Voicemail greeting source audio (converted copy lives in the var_data volume)
+*.mp3
+
 # not Claude
 .claude/
 .superpowers/
