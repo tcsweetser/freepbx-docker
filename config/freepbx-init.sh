@@ -103,10 +103,10 @@ else
   echo "[freepbx-init] Asterisk: IPv6 [::-udp] PJSIP transport already present"
 fi
 
-# --- Asterisk: voicemail emails carry an MP3 copy -----------------------------
+# --- Asterisk: voicemail emails carry MP3, not WAV ---------------------------
 # Asterisk cannot record MP3, so voicemail mailcmd points at a wrapper
-# (config/vm-mp3-sendmail.py, bind-mounted) that adds an MP3 of each recording
-# before handing the message to sendmail. voicemail.conf is FreePBX-managed but
+# (config/vm-mp3-sendmail.py, bind-mounted) that replaces each WAV recording
+# with an MP3 before handing the message to sendmail. voicemail.conf is FreePBX-managed but
 # FreePBX preserves [general] keys it does not own. Skipped until FreePBX is
 # installed and has written voicemail.conf. Idempotent.
 vm_conf=/etc/asterisk/voicemail.conf

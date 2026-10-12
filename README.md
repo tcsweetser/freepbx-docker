@@ -224,7 +224,7 @@ The main number (0735691900) reaches queue 100 through the catch-all inbound rou
 [config/sql/main-queue.sql](config/sql/main-queue.sql) restores the queue members
 (905, 906) and the 30 s failover to voicemail box 900. Its header also covers
 creating virtual extension 900 and setting the address for voicemail alert
-emails. Alert emails attach an MP3 copy of each recording via
+emails. Alert emails carry the recording as MP3 (replacing the WAV) via
 `config/vm-mp3-sendmail.py`, which the init script sets as the voicemail `mailcmd`.
 
 See [`config/sql/leaptel-trunk-tweaks.sql`](config/sql/leaptel-trunk-tweaks.sql)

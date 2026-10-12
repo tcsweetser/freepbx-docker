@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
-"""Asterisk voicemail `mailcmd`: attach an MP3 copy of the recording, then send.
+"""Asterisk voicemail `mailcmd`: swap the recording for an MP3, then send.
 
 Asterisk cannot record MP3, so voicemail.conf points `mailcmd` here instead of
 `/usr/sbin/sendmail -t`. Asterisk pipes the complete MIME notification on stdin.
-For every audio attachment (normally msgNNNN.WAV, GSM-in-WAV) an MP3 copy is
-added next to it, and the message is handed to sendmail unchanged otherwise.
+Every audio attachment (normally msgNNNN.WAV, GSM-in-WAV) is replaced by an MP3
+of the same name; the rest of the message is passed through unchanged.
 
-If conversion fails for any reason the ORIGINAL message is sent, so a voicemail
-alert is never lost because of an encoding problem. Failures are logged to
-/var/log/asterisk/vm-mp3-sendmail.log.
+Headers are parsed with the compat32 policy, which keeps them as the raw strings
+Asterisk wrote. The default policy decodes RFC 2047 words and re-folds them, so a
+caller-ID name such as an encoded "\\r\\nBcc: x" could be re-emitted as a real
+header line on an unpatched Python (CVE-2024-6923), and `sendmail -t` would then
+mail the recording to that address.
+
+If conversion fails for any reason the ORIGINAL message (with the WAV) is sent,
+so a voicemail alert is never lost because of an encoding problem. Failures are
+logged to /var/log/asterisk/vm-mp3-sendmail.log.
 """
 import logging
 import subprocess
 import sys
-from email import message_from_bytes, policy
-from email.message import EmailMessage
+from email import message_from_bytes
+from email.message import Message
+from email.mime.audio import MIMEAudio
+from email.policy import compat32
 from pathlib import PurePath
 
 SENDMAIL = ["/usr/sbin/sendmail", "-t"]
@@ -34,21 +42,39 @@ def to_mp3(audio: bytes) -> bytes:
     return result.stdout
 
 
-def add_mp3_copies(raw: bytes) -> bytes:
-    """Return the message with an MP3 added for each audio attachment."""
-    msg: EmailMessage = message_from_bytes(raw, policy=policy.default)
-    audio_parts = [p for p in msg.iter_attachments() if p.get_content_maintype() == "audio"]
-    for part in audio_parts:
-        name = PurePath(part.get_filename() or "voicemail.wav").with_suffix(".mp3").name
-        msg.add_attachment(to_mp3(part.get_content()), maintype="audio",
-                           subtype="mpeg", filename=name)
-    return msg.as_bytes()
+def mp3_part(part: Message) -> MIMEAudio:
+    """Build an audio/mpeg attachment from an audio part, keeping its base name."""
+    audio = part.get_payload(decode=True)
+    if not audio:
+        raise ValueError("empty audio attachment")
+    name = PurePath(part.get_filename() or "voicemail.wav").with_suffix(".mp3").name
+    new = MIMEAudio(to_mp3(audio), _subtype="mpeg")
+    new.add_header("Content-Disposition", "attachment", filename=name)
+    return new
+
+
+def replace_audio_with_mp3(raw: bytes) -> bytes:
+    """Return the message with every audio attachment replaced by an MP3."""
+    msg = message_from_bytes(raw)  # compat32: headers stay byte-for-byte
+    replaced = 0
+    for container in msg.walk():
+        if not container.is_multipart():
+            continue
+        children = container.get_payload()
+        for i, child in enumerate(children):
+            if not child.is_multipart() and child.get_content_maintype() == "audio":
+                children[i] = mp3_part(child)
+                replaced += 1
+    if not replaced:
+        return raw
+    # max_line_length=None: never re-fold, so header bytes match Asterisk's.
+    return msg.as_bytes(policy=compat32.clone(max_line_length=None))
 
 
 def main() -> int:
     raw = sys.stdin.buffer.read()
     try:
-        out = add_mp3_copies(raw)
+        out = replace_audio_with_mp3(raw)
     except (subprocess.SubprocessError, OSError, ValueError, TypeError) as exc:
         logger.error("MP3 conversion failed, sending original: %s", exc)
         out = raw
