@@ -23,6 +23,13 @@
 --   printf 'extension,name,tech,voicemail_enable,voicemail,voicemail_vmpwd\n900,MAIN,virtual,yes,default,<PIN>\n' \
 --     | sudo docker compose exec -T freepbx sh -c 'cat > /tmp/v.csv && fwconsole bi --type=extensions --replace /tmp/v.csv; rm -f /tmp/v.csv'
 --
+-- Email alerts for box 900 (recording attached, via the Postfix Gmail relay).
+-- Set through the voicemail module so the value survives `fwconsole reload`:
+--   sudo docker compose exec -T freepbx php -r 'include "/etc/freepbx.conf";
+--     $vm=FreePBX::Voicemail(); $b=$vm->getMailbox("900",false);
+--     $b["email"]="<ALERT_ADDRESS>"; $vm->updateMailbox("900",$b,false);'
+--   sudo docker compose exec -T freepbx fwconsole reload
+--
 -- Apply (from the repo root), then reload FreePBX so Asterisk regenerates config:
 --   PW=$(cat mysql_root_password.txt)
 --   sudo docker compose exec -T db sh -c "mysql -uroot -p'$PW' asterisk" < config/sql/main-queue.sql
