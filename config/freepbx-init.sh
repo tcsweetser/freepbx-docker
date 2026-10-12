@@ -103,21 +103,29 @@ else
   echo "[freepbx-init] Asterisk: IPv6 [::-udp] PJSIP transport already present"
 fi
 
-# --- Asterisk: voicemail emails carry MP3, not WAV ---------------------------
-# Asterisk cannot record MP3, so voicemail mailcmd points at a wrapper
+# --- Asterisk: voicemail email command and sender ------------------------------
+# mailcmd: Asterisk cannot record MP3, so it points at a wrapper
 # (config/vm-mp3-sendmail.py, bind-mounted) that replaces each WAV recording
-# with an MP3 before handing the message to sendmail. voicemail.conf is FreePBX-managed but
-# FreePBX preserves [general] keys it does not own. Skipped until FreePBX is
-# installed and has written voicemail.conf. Idempotent.
+# with an MP3 before handing the message to sendmail.
+# serveremail: without a domain Asterisk sends From: asterisk@<container
+# hostname> ("lab"), which cannot align with ieisi.org's DMARC p=quarantine.
+# asterisk@PBX_FQDN matches the envelope sender and pbx.ieisi.org's SPF record.
+# voicemail.conf is FreePBX-managed but FreePBX preserves these [general] keys.
+# Skipped until FreePBX is installed and has written voicemail.conf. Idempotent.
 vm_conf=/etc/asterisk/voicemail.conf
-vm_mailcmd=/usr/local/bin/vm-mp3-sendmail
-if [ -f "$vm_conf" ]; then
-  if grep -q '^mailcmd=' "$vm_conf"; then
-    sed -i -E "s#^mailcmd=.*#mailcmd=${vm_mailcmd}#" "$vm_conf"
+set_vm_general() {  # set_vm_general KEY VALUE: replace, or insert under [general]
+  if grep -q "^$1=" "$vm_conf"; then
+    sed -i -E "s#^$1=.*#$1=$2#" "$vm_conf"
   else
-    sed -i -E "0,/^\[general\]/s##[general]\nmailcmd=${vm_mailcmd}#" "$vm_conf"
+    sed -i -E "0,/^\[general\]/s##[general]\n$1=$2#" "$vm_conf"
   fi
-  echo "[freepbx-init] voicemail: mailcmd=${vm_mailcmd}"
+  echo "[freepbx-init] voicemail: $1=$2"
+}
+if [ -f "$vm_conf" ]; then
+  set_vm_general mailcmd /usr/local/bin/vm-mp3-sendmail
+  if [ -n "${PBX_FQDN:-}" ]; then
+    set_vm_general serveremail "asterisk@${PBX_FQDN}"
+  fi
 fi
 
 echo "[freepbx-init] done; handing off to image entrypoint"
