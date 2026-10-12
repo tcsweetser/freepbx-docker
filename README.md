@@ -69,7 +69,14 @@ printf "[smtp-server-fqdn]:port your-email@gmail.com:your-app-password" > sasl_p
 chmod 600 mysql_root_password.txt freepbxuser_password.txt sasl_passwd.txt
 ```
 
-2. To complete postfix configuration, set the `relayhost` in [postfix/main.cf](source/postfix/main.cf) to match your SMTP server defined in `sasl_passwd.txt`. 
+2. Outbound mail (voicemail alerts) goes through the Google Workspace SMTP relay
+   (`smtp-relay.gmail.com:587`, TLS required), authorised by this host's public
+   IPv4 (after NAT) and IPv6 addresses in the Workspace admin console, not by
+   password. `config/freepbx-init.sh` sets this up on every boot and uses
+   `PBX_FQDN` from `site.env` as the sender domain and HELO name, so that name
+   needs working DNS. `sasl_passwd.txt` must still exist because compose mounts
+   it as a secret, but SASL is disabled and its contents are unused. Postfix
+   logs to `/var/log/postfix.log` inside the container. 
 
 3. OPTION A: build the image from scratch:
 ```bash
@@ -212,6 +219,13 @@ PW=$(cat mysql_root_password.txt)
 sudo docker compose exec -T db sh -c "mysql -uroot -p'$PW' asterisk" < config/sql/leaptel-trunk-tweaks.sql
 sudo docker compose exec -T freepbx fwconsole reload
 ```
+
+The main number (0735691900) reaches queue 100 through the catch-all inbound route.
+[config/sql/main-queue.sql](config/sql/main-queue.sql) restores the queue members
+(905, 906) and the 30 s failover to voicemail box 900. Its header also covers
+creating virtual extension 900 and setting the address for voicemail alert
+emails. Alert emails attach an MP3 copy of each recording via
+`config/vm-mp3-sendmail.py`, which the init script sets as the voicemail `mailcmd`.
 
 See [`config/sql/leaptel-trunk-tweaks.sql`](config/sql/leaptel-trunk-tweaks.sql)
 for what it sets and why.

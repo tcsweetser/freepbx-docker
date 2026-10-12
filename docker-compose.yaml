@@ -69,6 +69,8 @@ services:
       - var_data:/var
       - etc_data:/etc
       - ./config/freepbx-init.sh:/usr/local/src/freepbx-init.sh:ro
+      # Voicemail mailcmd: adds an MP3 copy of each recording to the alert email.
+      - ./config/vm-mp3-sendmail.py:/usr/local/bin/vm-mp3-sendmail:ro
     network_mode: host
     secrets:
       - postfix_sasl_passwd

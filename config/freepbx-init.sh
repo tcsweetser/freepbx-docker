@@ -22,10 +22,27 @@ echo "[freepbx-init] applying reproducible customizations"
 # --- Postfix: send-only relay -------------------------------------------------
 # Disable the inbound smtpd listener so postfix never tries to bind :25
 # (host exim4 owns it). FreePBX only needs to SEND mail via the Gmail relay.
-# Also send logs to stdout so they show up in `docker compose logs` (the image
-# has no running syslog daemon).
 postconf -e 'master_service_disable = smtp.inet'
-postconf -e 'maillog_file = /dev/stdout'
+
+# Log to a file: /dev/stdout never reached `docker compose logs` (the image
+# entrypoint discards postfix's stdout), so failed voicemail emails left no
+# trace. Read with: docker compose exec freepbx tail /var/log/postfix.log
+postconf -e 'maillog_file = /var/log/postfix.log'
+
+# Relay through Google Workspace SMTP relay, authorised by this host's IPv4
+# (after NAT) and IPv6 addresses in the Workspace admin console -- no SASL.
+# The old smtp.gmail.com + app-password path bounced every message with
+# "530 5.7.0 Authentication Required" because the sasl secret was unreadable.
+# Sender and HELO use PBX_FQDN, which has working DNS, instead of the image
+# default lab.localdomain / freepbx.localdomain.
+postconf -e 'relayhost = [smtp-relay.gmail.com]:587' \
+            'smtp_sasl_auth_enable = no' \
+            'smtp_tls_security_level = encrypt'
+if [ -n "${PBX_FQDN:-}" ]; then
+  postconf -e "myhostname = ${PBX_FQDN}" 'myorigin = $myhostname'
+else
+  echo "[freepbx-init] WARNING: PBX_FQDN unset; postfix keeps default hostname, Google relay may reject mail"
+fi
 
 # --- Apache: move off host-occupied :80/:443 to :8082/:8443 -------------------
 ports_conf=/etc/apache2/ports.conf
@@ -84,6 +101,23 @@ EOF
   echo "[freepbx-init] Asterisk: added IPv6 [::-udp] PJSIP transport"
 else
   echo "[freepbx-init] Asterisk: IPv6 [::-udp] PJSIP transport already present"
+fi
+
+# --- Asterisk: voicemail emails carry an MP3 copy -----------------------------
+# Asterisk cannot record MP3, so voicemail mailcmd points at a wrapper
+# (config/vm-mp3-sendmail.py, bind-mounted) that adds an MP3 of each recording
+# before handing the message to sendmail. voicemail.conf is FreePBX-managed but
+# FreePBX preserves [general] keys it does not own. Skipped until FreePBX is
+# installed and has written voicemail.conf. Idempotent.
+vm_conf=/etc/asterisk/voicemail.conf
+vm_mailcmd=/usr/local/bin/vm-mp3-sendmail
+if [ -f "$vm_conf" ]; then
+  if grep -q '^mailcmd=' "$vm_conf"; then
+    sed -i -E "s#^mailcmd=.*#mailcmd=${vm_mailcmd}#" "$vm_conf"
+  else
+    sed -i -E "0,/^\[general\]/s##[general]\nmailcmd=${vm_mailcmd}#" "$vm_conf"
+  fi
+  echo "[freepbx-init] voicemail: mailcmd=${vm_mailcmd}"
 fi
 
 echo "[freepbx-init] done; handing off to image entrypoint"
