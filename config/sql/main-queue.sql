@@ -47,3 +47,14 @@ UPDATE queues_config
    SET maxwait = '30',
        dest    = 'ext-local,vmu900,1'
  WHERE extension = '100';
+
+-- Skip Asterisk's "please leave your message after the tone" (vm-intro): the
+-- custom box 900 greeting already says it. GUI: Voicemail Admin > Settings >
+-- Dialplan Behavior > Disable Standard Prompt. Global, but box 900 is the only
+-- live mailbox. The greeting itself (unavail.wav) lives in the var_data volume,
+-- not here: re-upload it after `down -v`, converted to 8 kHz mono WAV:
+--   ffmpeg -i greeting.mp3 -ar 8000 -ac 1 -c:a pcm_s16le \
+--     /var/spool/asterisk/voicemail/default/900/unavail.wav   (owner asterisk)
+UPDATE voicemail_admin
+   SET value = 's'
+ WHERE variable = 'VM_OPTS';
